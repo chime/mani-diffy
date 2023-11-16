@@ -95,3 +95,6 @@ graph TD;
 
 Submit a PR where you make a change to the overrides and you'll see the [Github action]( [README](../../.github/workflows/generate-manifests-demos.yaml)) add a commit to your PR with the resulting changes.
 
+<img width="1099" alt="1" src="https://github.com/1debit/mani-diffy/assets/9005904/6b6d9e45-57f7-43ff-906f-ebf4c0a03ad9">
+<img width="1701" alt="2" src="https://github.com/1debit/mani-diffy/assets/9005904/03d4a49e-1fc9-40a1-9882-1c032b2d345b">
+
