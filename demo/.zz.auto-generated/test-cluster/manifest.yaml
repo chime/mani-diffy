@@ -1,0 +1,31 @@
+---
+# Source: app-of-apps/templates/apps.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: test-app-group-1
+spec:
+  destination:
+    namespace: argocd
+    server: https://kubernetes.default.svc
+  project: default
+  source:
+    repoURL: https://github.com/my-org/my-repo.git
+    targetRevision: HEAD
+
+    path: charts/app-of-apps
+    helm:
+      parameters:
+        - name: renderBaseDir
+          value: /zz.auto-generated/root
+        - name: cluster
+          value: use1-test-eks-cluster
+        - name: env
+          value: test
+        - name: ns
+          value: app-group-1
+      valueFiles:
+        - ../../overrides/app-of-apps/test-app-group-1.yaml
+
+  syncPolicy:
+    automated: {}

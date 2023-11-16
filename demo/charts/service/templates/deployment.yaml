@@ -1,0 +1,28 @@
+{{- $rootValues := .Values -}}
+{{- range $processName, $process := $rootValues.processes }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ printf "%s-%s" $rootValues.appName $processName }}
+  annotations:
+    appTag: {{ default "latest" $rootValues.appTag }}
+spec:
+  replicas: {{ default 1 $process.replicas }}
+  selector:
+    matchLabels:
+      app: {{ printf "%s-%s" $rootValues.appName $processName }}
+  template:
+    metadata:
+      labels:
+        app: {{ printf "%s-%s" $rootValues.appName $processName }}
+    spec:
+      containers:
+        - name: {{ $processName }}
+          image: "gcr.io/heptio-images/ks-guestbook-demo:0.1"
+          command: {{ default (list) $process.command }}
+          resources:
+            limits:
+              memory: {{ default "32Mi" $process.memory }}
+              cpu: {{ default "10m" $process.cpu }}
+---
+{{- end }}

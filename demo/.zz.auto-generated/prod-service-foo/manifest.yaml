@@ -1,0 +1,26 @@
+---
+# Source: service/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: foo-web
+  annotations:
+    appTag: latest
+spec:
+  replicas: 10
+  selector:
+    matchLabels:
+      app: foo-web
+  template:
+    metadata:
+      labels:
+        app: foo-web
+    spec:
+      containers:
+        - name: web
+          image: "gcr.io/heptio-images/ks-guestbook-demo:0.1"
+          command: []
+          resources:
+            limits:
+              memory: 32Mi
+              cpu: 10m

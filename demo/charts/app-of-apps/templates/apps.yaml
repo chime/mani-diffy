@@ -1,0 +1,3 @@
+{{- range $child, $params := $.Values.children -}}
+{{ include ($params.chart) (dict "child" $child "childParams" $params "root" $.Values "files" $.Files) }}
+{{- end -}}

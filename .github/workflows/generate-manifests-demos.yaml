@@ -1,0 +1,35 @@
+name: Generate manifests for demo
+on: [push]
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Git
+        run: |
+          git config --global user.name 'Bot'
+          git config --global user.email 'bot@users.noreply.github.com'
+
+      - name: Compile
+        run: |
+          make build-binaries
+
+      - name: Run for demo
+        run: |
+          cd demo
+          rm -rf .zz.auto-generated
+          ../mani-diffy -hash-store=json
+
+      - name: Commit and push changes to /demo
+        run: |
+          if git diff --quiet; then
+              echo "No changes to commit"
+          else
+              git add .
+              git commit -m "Some manifests have changed in the demo."
+              git push
+          fi
+          cd ..

@@ -1,0 +1,11 @@
+children:
+  prod-app-group-1:
+    chart: app-of-apps
+    parameters:
+      - name: cluster
+        value: use1-prod-eks-cluster
+      - name: env
+        value: prod
+      - name: ns
+        value: app-group-1
+

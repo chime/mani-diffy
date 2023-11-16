@@ -1,0 +1,10 @@
+children:
+  test-app-group-1:
+    chart: app-of-apps
+    parameters:
+      - name: cluster
+        value: use1-test-eks-cluster
+      - name: env
+        value: test
+      - name: ns
+        value: app-group-1

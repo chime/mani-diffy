@@ -1,0 +1,7 @@
+children:
+  foo:
+    chart: service
+  bar:
+    chart: service
+  baz:
+    chart: service

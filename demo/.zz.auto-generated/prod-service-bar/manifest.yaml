@@ -1,0 +1,52 @@
+---
+# Source: service/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bar-web
+  annotations:
+    appTag: latest
+spec:
+  replicas: 20
+  selector:
+    matchLabels:
+      app: bar-web
+  template:
+    metadata:
+      labels:
+        app: bar-web
+    spec:
+      containers:
+        - name: web
+          image: "gcr.io/heptio-images/ks-guestbook-demo:0.1"
+          command: []
+          resources:
+            limits:
+              memory: 200Mi
+              cpu: 100m
+---
+# Source: service/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bar-worker
+  annotations:
+    appTag: latest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bar-worker
+  template:
+    metadata:
+      labels:
+        app: bar-worker
+    spec:
+      containers:
+        - name: worker
+          image: "gcr.io/heptio-images/ks-guestbook-demo:0.1"
+          command: []
+          resources:
+            limits:
+              memory: 200Mi
+              cpu: 100m

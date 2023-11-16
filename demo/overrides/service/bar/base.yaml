@@ -1,0 +1,11 @@
+appName: 'bar'
+
+processes:
+  web:
+    replicas: 2
+    memory: "200Mi"
+    cpu: 100m
+  worker:
+    replicas: 1
+    memory: "200Mi"
+    cpu: 100m

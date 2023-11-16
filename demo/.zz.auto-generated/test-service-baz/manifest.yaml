@@ -1,0 +1,26 @@
+---
+# Source: service/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: baz-web
+  annotations:
+    appTag: latest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: baz-web
+  template:
+    metadata:
+      labels:
+        app: baz-web
+    spec:
+      containers:
+        - name: web
+          image: "gcr.io/heptio-images/ks-guestbook-demo:0.1"
+          command: []
+          resources:
+            limits:
+              memory: 32Mi
+              cpu: 10m

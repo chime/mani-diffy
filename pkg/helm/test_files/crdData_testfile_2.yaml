@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prod-cluster
+  namespace: argocd
+spec:
+  destination:
+    namespace: argocd
+    server: https://kubernetes.default.svc
+  project: default
+  source:
+    helm:
+      parameters:
+        - name: region
+          value: us-east-1
+        - name: testName
+          value: testValue
+      valueFiles:
+        - ../../overrides/bootstrap/prod-cluster.yaml
+        - ../../overrides/bootstrap/fake_file.yaml
+    path: charts/app-of-apps
+    repoURL: https://github.com/1debit/mani-diffy
+    targetRevision: HEAD
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,7 @@
+apiVersion: v2
+appVersion: "1.0"
+description: "app-of-apps helm chart"
+name: app-of-apps
+# DON'T BUMP THIS. We don't use helm versioning.
+version: 1.0.0
+icon: https://chime.com/favicon.ico

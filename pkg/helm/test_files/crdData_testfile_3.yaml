@@ -1,0 +1,23 @@
+# Source: app-of-apps/templates/apps.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: test-service-bar
+spec:
+  destination:
+    namespace: argocd
+    server: https://kubernetes.default.svc
+  project: default
+  source:
+    repoURL: https://github.com/my-org/my-repo.git
+    path: demo/charts/service
+    helm:
+      version: v3
+      parameters:
+        - name: env
+          value: test
+      valueFiles:
+        - ../../overrides/service/bar/base.yaml
+        - ../../overrides/service/bar/test.yaml
+  syncPolicy:
+    automated: {}

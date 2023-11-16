@@ -1,0 +1,7 @@
+# ignore binaries build during testing
+mani-diffy*
+hashes.json
+hash.sum
+
+.idea
+.DS_Store
