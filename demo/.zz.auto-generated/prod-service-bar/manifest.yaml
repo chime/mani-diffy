@@ -7,7 +7,7 @@ metadata:
   annotations:
     appTag: latest
 spec:
-  replicas: 20
+  replicas: 5000
   selector:
     matchLabels:
       app: bar-web
