@@ -300,7 +300,7 @@ func TestDifferenceInTwoDifferentFiles(t *testing.T) {
 func TestGenerateHashOnChart(t *testing.T) {
 	hash, _ := generalHashFunction("demo/charts/app-of-apps")
 	h := hex.EncodeToString(hash)
-	actualHash := "dcf6bb37066d9fdd5c790edbe765953e526ce0116f00ed3d1dce1ba7259f6770"
+	actualHash := "95630c1ec9b835536a3056d4dcbbd6e023111c5e4340ac80b945c2e3a4f8fc42"
 	if h != actualHash {
 		t.Errorf("Failed to generate a generic hash on a chart. got: %s wanted: %s", h, actualHash)
 	}
