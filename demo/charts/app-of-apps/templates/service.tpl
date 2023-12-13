@@ -11,7 +11,7 @@ spec:
     server: https://kubernetes.default.svc
   project: default
   source:
-    repoURL: https://github.com/my-org/my-repo.git
+    repoURL: https://github.com/1debit/mani-diffy.git
     path: charts/service
     helm:
       version: v3
