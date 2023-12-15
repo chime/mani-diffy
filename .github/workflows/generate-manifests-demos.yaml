@@ -19,8 +19,8 @@ jobs:
 
       - name: Run for demo
         run: |
-          rm -rf .zz.auto-generated
-          ../mani-diffy -hash-store=json
+          rm -rf demo/.zz.auto-generated
+          ./mani-diffy -hash-store=json -root=demo/bootstrap -render-dir=demo/.zz.auto-generated
 
       - name: Commit and push changes to /demo
         run: |
