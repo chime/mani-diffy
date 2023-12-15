@@ -13,7 +13,7 @@ spec:
     repoURL: https://github.com/1debit/mani-diffy.git
     targetRevision: HEAD
 
-    path: charts/app-of-apps
+    path: demo/charts/app-of-apps
     helm:
       parameters:
         - name: renderBaseDir
