@@ -3,6 +3,7 @@ on: [push]
 
 env:
   USE_RELEASE: true
+  RELEASE_TAG: v0.1.0
 
 jobs:
   build-and-run:
@@ -25,7 +26,7 @@ jobs:
             const release = await github.rest.repos.getReleaseByTag({
               owner,
               repo,
-              tag: 'v0.1.0'
+              tag: env.RELEASE_TAG
             })
             const asset = release.data.assets.find(asset => asset.name === 'mani-diffy')
             const downloadUrl = asset.browser_download_url
