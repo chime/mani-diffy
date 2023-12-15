@@ -2,7 +2,7 @@ name: Generate manifests for demo
 on: [push]
 
 env:
-  USE_RELEASE: false
+  USE_RELEASE: true
 
 jobs:
   build-and-run:
