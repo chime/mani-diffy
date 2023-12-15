@@ -11,7 +11,7 @@ The rendered manifests are kept within the repository, making diffs between revi
 ---
 ## How it works:
 1. A user makes their desired change to the application's templates (charts, overrides, etc) and submits a PR with the change.
-2. A Github action job executes `mani-diffy`, rendering all manifests affected by the change.
+2. A Github action executes `mani-diffy`, rendering all manifests affected by the change.
 3. Any updated manifests are submitted back to the same PR as a new commit.
 4. The author and any reviewers will be able to review the diff between the new changes and the previous version of the manifests.
 
