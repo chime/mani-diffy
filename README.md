@@ -11,9 +11,26 @@ The rendered manifests are kept within the repository, making diffs between revi
 ---
 ## How it works:
 1. A user makes their desired change to the application's templates (charts, overrides, etc) and submits a PR with the change.
-2. A CI job executes `mani-diffy`, rendering all manifests affected by the change.
+2. A Github action executes `mani-diffy`, rendering all manifests affected by the change.
 3. Any updated manifests are submitted back to the same PR as a new commit.
 4. The author and any reviewers will be able to review the diff between the new changes and the previous version of the manifests.
+
+# See it in action
+
+🫵 Submit a PR where you make a change to the overrides of the [`demo`](demo/README.md), and you'll see the [Github action]( [README](../../.github/workflows/generate-manifests-demos.yaml)) add a commit to your PR with the resulting changes.
+
+<img width="1099" alt="1" src="https://github.com/1debit/mani-diffy/assets/9005904/6b6d9e45-57f7-43ff-906f-ebf4c0a03ad9">
+<img width="1701" alt="2" src="https://github.com/1debit/mani-diffy/assets/9005904/03d4a49e-1fc9-40a1-9882-1c032b2d345b">
+
+# See it in action in a video !
+
+In this screen recording a pull request is opened to make the following changes to the [`demo`](demo/README.md):
+
+1. Bump the count of pods for the `foo` service in the prod cluster
+2. Add an annotation to all services
+
+https://github.com/1debit/mani-diffy/assets/9005904/6c496996-f7af-4932-bf5d-01a5b57bbd99
+
 
 ## Post Renderers
 
@@ -51,7 +68,3 @@ You can see an example of that in the [`demo`](demo/README.md) directory.
 Q: Is ArgoCD using the rendered manifests in `.zz.auto-generated` ?
 
 A: No, ArgoCD renders the charts itself. There is no expected discrepancy between the manifest files rendered by mani-diffy and by ArgoCD as long as they are using the same version of Helm.
-
-
-
-
