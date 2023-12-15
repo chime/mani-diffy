@@ -19,7 +19,6 @@ jobs:
 
       - name: Run for demo
         run: |
-          cd demo
           rm -rf .zz.auto-generated
           ../mani-diffy -hash-store=json
 
@@ -32,4 +31,3 @@ jobs:
               git commit -m "Some manifests have changed in the demo."
               git push
           fi
-          cd ..
