@@ -15,6 +15,21 @@ jobs:
           git config --global user.name 'Bot'
           git config --global user.email 'bot@users.noreply.github.com'
 
+      - name: Download mani-diffy binary
+        uses: actions/github-script@v5
+        with:
+          script: |
+            const { owner, repo } = context.repo
+            const release = await github.rest.repos.getReleaseByTag({
+              owner,
+              repo,
+              tag: 'v0.1.0'
+            })
+            const asset = release.data.assets.find(asset => asset.name === 'mani-diffy')
+            const downloadUrl = asset.browser_download_url
+            await exec.exec('wget', ['-O', 'mani-diffy', downloadUrl])
+            await exec.exec('chmod', ['+x', 'mani-diffy'])
+
       - name: Run for demo
         run: |
           cd demo
