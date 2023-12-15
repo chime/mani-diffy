@@ -1,6 +1,9 @@
 name: Generate manifests for demo
 on: [push]
 
+env:
+  USE_RELEASE: true
+
 jobs:
   build-and-run:
     runs-on: ubuntu-latest
@@ -14,6 +17,7 @@ jobs:
           git config --global user.email 'bot@users.noreply.github.com'
 
       - name: Download mani-diffy binary
+        if: env.USE_RELEASE == 'true'
         uses: actions/github-script@v5
         with:
           script: |
@@ -27,6 +31,11 @@ jobs:
             const downloadUrl = asset.browser_download_url
             await exec.exec('wget', ['-O', 'mani-diffy', downloadUrl])
             await exec.exec('chmod', ['+x', 'mani-diffy'])
+
+      - name: Compile
+        if: env.USE_RELEASE == 'false'
+        run: |
+          make build-binaries
 
       - name: Run for demo
         run: |
