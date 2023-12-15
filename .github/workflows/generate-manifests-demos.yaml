@@ -15,10 +15,6 @@ jobs:
           git config --global user.name 'Bot'
           git config --global user.email 'bot@users.noreply.github.com'
 
-      - name: Compile
-        run: |
-          make build-binaries
-
       - name: Run for demo
         run: |
           cd demo
