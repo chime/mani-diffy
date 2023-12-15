@@ -26,12 +26,13 @@ jobs:
             const release = await github.rest.repos.getReleaseByTag({
               owner,
               repo,
-              tag: env.RELEASE_TAG
+              tag: core.getInput('release_tag')
             })
             const asset = release.data.assets.find(asset => asset.name === 'mani-diffy')
             const downloadUrl = asset.browser_download_url
             await exec.exec('wget', ['-O', 'mani-diffy', downloadUrl])
             await exec.exec('chmod', ['+x', 'mani-diffy'])
+          release_tag: ${{ env.RELEASE_TAG }}
 
       - name: Compile
         if: env.USE_RELEASE == 'false'
