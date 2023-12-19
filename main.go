@@ -42,6 +42,8 @@ type Walker struct {
 	ignoreSuffix string
 }
 
+type HashStores map[string]func(string, string) (HashStore, error)
+
 // Walk walks a directory tree looking for Argo applications and renders them
 func (w *Walker) Walk(inputPath, outputPath string, maxDepth int, hashes HashStore) error {
 	visited := make(map[string]bool)
@@ -85,71 +87,85 @@ func pruneUnvisited(visited map[string]bool, outputPath string) error {
 }
 
 func (w *Walker) walk(inputPath, outputPath string, depth, maxDepth int, visited map[string]bool, hashes HashStore) error {
-	if maxDepth != InfiniteDepth {
-		// If we've reached the max depth, stop walking
-		if depth > maxDepth {
-			return nil
-		}
+	if maxDepth != InfiniteDepth && depth > maxDepth {
+		return nil
 	}
 
 	log.Println("Dropping into", inputPath)
-
-	fi, err := os.ReadDir(inputPath)
+	files, err := os.ReadDir(inputPath)
 	if err != nil {
 		return err
 	}
-	for _, file := range fi {
+
+	for _, file := range files {
 		if !strings.Contains(file.Name(), ".yaml") {
 			continue
 		}
-
-		crds, err := helm.Read(filepath.Join(inputPath, file.Name()))
-		if err != nil {
+		if err := w.processFile(file, inputPath, outputPath, depth, maxDepth, visited, hashes); err != nil {
 			return err
 		}
-		for _, crd := range crds {
-			if crd.Kind != "Application" {
-				continue
-			}
+	}
 
-			if strings.HasSuffix(crd.ObjectMeta.Name, w.ignoreSuffix) {
-				continue
-			}
+	return nil
+}
 
-			path := filepath.Join(outputPath, crd.ObjectMeta.Name)
-			visited[path] = true
+func (w *Walker) processFile(file os.DirEntry, inputPath, outputPath string, depth, maxDepth int, visited map[string]bool, hashes HashStore) error {
+	apps, err := helm.Read(filepath.Join(inputPath, file.Name()))
+	if err != nil {
+		return err
+	}
 
-			hash, err := hashes.Get(crd.ObjectMeta.Name)
-			// COMPARE HASHES HERE. STEP INTO RENDER IF NO MATCH
-			if err != nil {
-				return err
-			}
-			hashGenerated, err := w.GenerateHash(crd)
-			if err != nil {
-				return err
-			}
-
-			emptyManifest, err := helm.EmptyManifest(filepath.Join(path, "manifest.yaml"))
-			if err != nil {
-				return err
-			}
-			if hashGenerated != hash || emptyManifest {
-				log.Printf("No match detected. Render: %s\n", crd.ObjectMeta.Name)
-				if err := w.Render(crd, path); err != nil {
-					return err
-				}
-
-				if err := hashes.Add(crd.ObjectMeta.Name, hashGenerated); err != nil {
-					return err
-				}
-			}
-
-			if err := w.walk(path, outputPath, depth+1, maxDepth, visited, hashes); err != nil {
-				return err
-			}
+	for _, app := range apps {
+		if err := w.processApps(app, outputPath, depth, maxDepth, visited, hashes); err != nil {
+			return err
 		}
 	}
+
 	return nil
+}
+
+func (w *Walker) processApps(app *v1alpha1.Application, outputPath string, depth, maxDepth int, visited map[string]bool, hashes HashStore) error {
+	if app.Kind != "Application" || strings.HasSuffix(app.ObjectMeta.Name, w.ignoreSuffix) {
+		return nil
+	}
+
+	path := filepath.Join(outputPath, app.ObjectMeta.Name)
+	visited[path] = true
+
+	emptyManifest, err := helm.EmptyManifest(filepath.Join(path, "manifest.yaml"))
+	if err != nil {
+		return err
+	}
+
+	existingHash, appHash, err := w.generateHashes(app, hashes)
+	if err != nil {
+		return err
+	}
+
+	if appHash != existingHash || emptyManifest {
+		if err := w.renderAndUpdateHashes(app, path, appHash, hashes); err != nil {
+			return err
+		}
+	}
+
+	return w.walk(path, outputPath, depth+1, maxDepth, visited, hashes)
+}
+
+func (w *Walker) generateHashes(app *v1alpha1.Application, hashes HashStore) (string, string, error) {
+	existingHash, err := hashes.Get(app.ObjectMeta.Name)
+	if err != nil {
+		return "", "", err
+	}
+	generatedHash, err := w.GenerateHash(app)
+	return existingHash, generatedHash, err
+}
+
+func (w *Walker) renderAndUpdateHashes(app *v1alpha1.Application, path, generatedHash string, hashes HashStore) error {
+	log.Printf("No match detected. Render: %s\n", app.ObjectMeta.Name)
+	if err := w.Render(app, path); err != nil {
+		return err
+	}
+	return hashes.Add(app.ObjectMeta.Name, generatedHash)
 }
 
 func (w *Walker) Render(application *v1alpha1.Application, output string) error {
@@ -218,7 +234,16 @@ func main() {
 		log.Fatal(err)
 	}
 
-	h, err := getHashStore(*hashStore, *hashStrategy, *renderDir)
+	hashStores := HashStores{
+		"sumfile": func(outputPath, hashStrategy string) (HashStore, error) { //nolint:unparam
+			return NewSumFileStore(outputPath, hashStrategy), nil
+		},
+		"json": func(outputPath, hashStrategy string) (HashStore, error) {
+			return NewJSONHashStore(filepath.Join(outputPath, "hashes.json"), hashStrategy)
+		},
+	}
+
+	h, err := getHashStore(hashStores, *hashStore, *hashStrategy, *renderDir)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -244,16 +269,7 @@ func main() {
 	log.Printf("mani-diffy took %v to run", time.Since(start))
 }
 
-var hashStores = map[string]func(string, string) (HashStore, error){
-	"sumfile": func(outputPath, hashStrategy string) (HashStore, error) { //nolint:unparam
-		return NewSumFileStore(outputPath, hashStrategy), nil
-	},
-	"json": func(outputPath, hashStrategy string) (HashStore, error) {
-		return NewJSONHashStore(filepath.Join(outputPath, "hashes.json"), hashStrategy)
-	},
-}
-
-func getHashStore(hashStore, hashStrategy, outputPath string) (HashStore, error) {
+func getHashStore(hashStores HashStores, hashStore, hashStrategy, outputPath string) (HashStore, error) {
 	if fn, ok := hashStores[hashStore]; ok {
 		return fn(outputPath, hashStrategy)
 	}

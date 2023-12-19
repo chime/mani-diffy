@@ -103,14 +103,14 @@ func installDependencies(chartDirectory string) error {
 func template(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueFile string) ([]byte, error) {
 
 	chartPath := strings.Split(helmInfo.Spec.Source.Path, "/")
-	chart := fmt.Sprint("../" + chartPath[len(chartPath)-1])
+	chart := "../" + chartPath[len(chartPath)-1]
 
 	setValues, fileValues := buildParams(helmInfo, ignoreValueFile)
 
 	tmpFile := ""
 	if helmInfo.Spec.Source.Helm.Values != "" {
 		dataFile, err := createTempFile(helmInfo.Spec.Source.Helm.Values)
-		defer os.Remove(dataFile)
+		defer removeFile(dataFile)
 		if err != nil {
 			log.Println(err)
 		}
@@ -166,8 +166,14 @@ func writeToFile(manifest []byte, location string) error {
 			"manifest.yaml",
 		),
 		manifest,
-		0664,
+		0o664,
 	)
+}
+
+func removeFile(filePath string) {
+	if err := os.Remove(filePath); err != nil {
+		log.Printf("Failed to remove file %s: %v", filePath, err)
+	}
 }
 
 func EmptyManifest(manifest string) (bool, error) {
@@ -208,7 +214,7 @@ func GenerateHash(crd *v1alpha1.Application, ignoreValueFile string) (string, er
 	if crd.Spec.Source.Helm != nil && len(crd.Spec.Source.Helm.ValueFiles) > 0 {
 		oHash := sha256.New()
 		overrideFiles := crd.Spec.Source.Helm.ValueFiles
-		matchDots := regexp.MustCompile(`\.\.\/`)
+		matchDots := regexp.MustCompile(`\.\./`)
 		for i := 0; i < len(overrideFiles); i++ {
 			if ignoreValueFile == "" || !strings.Contains(overrideFiles[i], ignoreValueFile) {
 				trimmedFilename := matchDots.ReplaceAllString(overrideFiles[i], "")
@@ -248,7 +254,6 @@ func generalHashFunction(dirFilepath string) ([]byte, error) {
 		}
 		fmt.Fprintf(hash, "%x  %s\n", m[path], path)
 	}
-	// log.Printf("FINAL HASH: %v\n", hex.EncodeToString(hash.Sum(nil)))
 	return hash.Sum(nil), nil
 }
 
@@ -406,7 +411,6 @@ func Read(inputCRD string) ([]*v1alpha1.Application, error) {
 	crdSpecs := make([]*v1alpha1.Application, 0)
 	yamlFile, err := os.ReadFile(inputCRD)
 	if err != nil {
-		// log.Fatalf("Error reading crd: %s %v", inputCRD, err)
 		return crdSpecs, fmt.Errorf("error reading crd: %s %w", inputCRD, err)
 	}
 
@@ -417,7 +421,6 @@ func Read(inputCRD string) ([]*v1alpha1.Application, error) {
 			if errors.Is(err, io.EOF) {
 				break
 			}
-			// panic(fmt.Errorf("document decode failed: %w", err))
 			return crdSpecs, fmt.Errorf("document decode failed: %w", err)
 		}
 		crdSpecs = append(crdSpecs, &app)

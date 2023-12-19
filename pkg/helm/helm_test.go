@@ -122,7 +122,7 @@ metadata:
 		}
 	})
 
-	defer os.Remove(fileName)
+	defer removeFile(fileName)
 
 	t.Run("Verify the file is cleaned up", func(t *testing.T) {
 		_, err = os.Stat(fileName)

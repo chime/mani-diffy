@@ -80,7 +80,7 @@ func (s *JSONHashStore) Save() error {
 		return err
 	}
 
-	return os.WriteFile(s.path, b, 0644)
+	return os.WriteFile(s.path, b, 0o644)
 }
 
 type ChartHash struct {
@@ -114,24 +114,24 @@ func (s *SumFileStore) Add(name, hash string) error {
 		return nil
 	}
 
-	return os.WriteFile(s.filepath(name), data, 0664)
+	return os.WriteFile(s.filepath(name), data, 0o664)
 }
 
 func (s *SumFileStore) Get(name string) (string, error) {
-	filepath := s.filepath(name)
+	fpath := s.filepath(name)
 
-	yfile, err := os.ReadFile(filepath)
+	yfile, err := os.ReadFile(fpath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			// This is fine to do since there are cases where there won't be a hash. e.g. root
 			return "", nil
 		}
-		return "", fmt.Errorf("error reading file hash from %s error: %w", filepath, err)
+		return "", fmt.Errorf("error reading file hash from %s error: %w", fpath, err)
 	}
 	ch := ChartHash{}
 	err2 := yaml.Unmarshal(yfile, &ch)
 	if err2 != nil {
-		return "", fmt.Errorf("error unmarshaling hash %s error: %w", filepath, err2)
+		return "", fmt.Errorf("error unmarshaling hash %s error: %w", fpath, err2)
 	}
 	return ch.Hash, nil
 }

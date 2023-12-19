@@ -1,8 +1,5 @@
 test:
-		go test ./...
-
-test-verbose:
-		go test -v ./...
+		go test -v -cover -short ./...
 
 benchmark:
 		go test -bench=.
@@ -15,3 +12,6 @@ lint:
 
 build-binaries:
 	  go build -o mani-diffy
+
+coverage:
+	go test -v -coverprofile=coverage.out -short ./... && go tool cover -html=coverage.out
