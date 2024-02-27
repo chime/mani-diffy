@@ -158,12 +158,13 @@ func (w *Walker) Render(application *v1alpha1.Application, output string) error 
 	var render Renderer
 
 	// Figure out which renderer to use
-	if application.Spec.Source.Helm != nil {
+	switch {
+	case application.Spec.Source.Helm != nil:
 		render = w.HelmTemplate
-	} else if application.Spec.Source.Kustomize != nil {
+	case application.Spec.Source.Kustomize != nil:
 		log.Println("WARNING: kustomize not supported")
 		return nil
-	} else {
+	default:
 		render = w.CopySource
 	}
 
@@ -219,7 +220,10 @@ func main() {
 	// Runs the command in the specified directory
 	if flag.NArg() == 1 {
 		rootPath := os.Args[len(os.Args)-1]
-		os.Chdir(rootPath)
+		err := os.Chdir(rootPath)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	start := time.Now()
