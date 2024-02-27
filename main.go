@@ -136,6 +136,9 @@ func (w *Walker) walk(inputPath, outputPath string, depth, maxDepth int, visited
 			if hashGenerated != hash || emptyManifest {
 				log.Printf("No match detected. Render: %s\n", crd.ObjectMeta.Name)
 				if err := w.Render(crd, path); err != nil {
+					if strings.Contains(err.Error(), "not supported") {
+						continue
+					}
 					return err
 				}
 
@@ -163,7 +166,7 @@ func (w *Walker) Render(application *v1alpha1.Application, output string) error 
 		render = w.HelmTemplate
 	case application.Spec.Source.Kustomize != nil:
 		log.Println("WARNING: kustomize not supported")
-		return nil
+		return fmt.Errorf("kustomize not supported")
 	default:
 		render = w.CopySource
 	}
