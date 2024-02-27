@@ -157,9 +157,12 @@ func (w *Walker) Render(application *v1alpha1.Application, output string) error 
 
 	var render Renderer
 
-	// Figure out what renderer to use
+	// Figure out which renderer to use
 	if application.Spec.Source.Helm != nil {
 		render = w.HelmTemplate
+	} else if application.Spec.Source.Kustomize != nil {
+		log.Println("WARNING: kustomize not supported")
+		return nil
 	} else {
 		render = w.CopySource
 	}
@@ -212,6 +215,12 @@ func main() {
 	ignoreValueFile := flag.String("ignore-value-file", "overrides-to-ignore", "Override file to ignore based on filename")
 	postRenderer := flag.String("post-renderer", "", "When provided, binary will be called after an application is rendered.")
 	flag.Parse()
+
+	// Runs the command in the specified directory
+	if flag.NArg() == 1 {
+		rootPath := os.Args[len(os.Args)-1]
+		os.Chdir(rootPath)
+	}
 
 	start := time.Now()
 	if err := helm.VerifyRenderDir(*renderDir); err != nil {
