@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -136,7 +137,7 @@ func (w *Walker) walk(inputPath, outputPath string, depth, maxDepth int, visited
 			if hashGenerated != hash || emptyManifest {
 				log.Printf("No match detected. Render: %s\n", crd.ObjectMeta.Name)
 				if err := w.Render(crd, path); err != nil {
-					if strings.Contains(err.Error(), "not supported") {
+					if errors.Is(err, errors.ErrUnsupported) {
 						continue
 					}
 					return err
@@ -166,7 +167,7 @@ func (w *Walker) Render(application *v1alpha1.Application, output string) error 
 		render = w.HelmTemplate
 	case application.Spec.Source.Kustomize != nil:
 		log.Println("WARNING: kustomize not supported")
-		return fmt.Errorf("kustomize not supported")
+		return errors.ErrUnsupported
 	default:
 		render = w.CopySource
 	}
@@ -224,7 +225,7 @@ func main() {
 	// Runs the command in the specified directory
 	err := os.Chdir(*workdir)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Could not set workdir: ", err)
 	}
 
 	start := time.Now()
