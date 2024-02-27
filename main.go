@@ -210,6 +210,7 @@ func PostRender(command string) PostRenderer {
 
 func main() {
 	root := flag.String("root", "bootstrap", "Directory to initially look for k8s manifests containing Argo applications. The root of the tree.")
+	workdir := flag.String("workdir", ".", "Directory to run the command in.")
 	renderDir := flag.String("output", ".zz.auto-generated", "Path to store the compiled Argo applications.")
 	maxDepth := flag.Int("max-depth", InfiniteDepth, "Maximum depth for the depth first walk.")
 	hashStore := flag.String("hash-store", "sumfile", "The hashing backend to use. Can be `sumfile` or `json`.")
@@ -221,12 +222,9 @@ func main() {
 	flag.Parse()
 
 	// Runs the command in the specified directory
-	if flag.NArg() == 1 {
-		rootPath := os.Args[len(os.Args)-1]
-		err := os.Chdir(rootPath)
-		if err != nil {
-			log.Fatal(err)
-		}
+	err := os.Chdir(*workdir)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	start := time.Now()
