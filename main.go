@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -17,6 +18,8 @@ import (
 )
 
 const InfiniteDepth = -1
+
+var ErrKustomizeNotSupported = errors.New("kustomize not supported")
 
 // Renderer is a function that can render an Argo application.
 type Renderer func(*v1alpha1.Application, string) error
@@ -136,6 +139,9 @@ func (w *Walker) walk(inputPath, outputPath string, depth, maxDepth int, visited
 			if hashGenerated != hash || emptyManifest {
 				log.Printf("No match detected. Render: %s\n", crd.ObjectMeta.Name)
 				if err := w.Render(crd, path); err != nil {
+					if errors.Is(err, ErrKustomizeNotSupported) {
+						continue
+					}
 					return err
 				}
 
@@ -157,10 +163,14 @@ func (w *Walker) Render(application *v1alpha1.Application, output string) error 
 
 	var render Renderer
 
-	// Figure out what renderer to use
-	if application.Spec.Source.Helm != nil {
+	// Figure out which renderer to use
+	switch {
+	case application.Spec.Source.Helm != nil:
 		render = w.HelmTemplate
-	} else {
+	case application.Spec.Source.Kustomize != nil:
+		log.Println("WARNING: kustomize not supported")
+		return ErrKustomizeNotSupported
+	default:
 		render = w.CopySource
 	}
 
@@ -203,6 +213,7 @@ func PostRender(command string) PostRenderer {
 
 func main() {
 	root := flag.String("root", "bootstrap", "Directory to initially look for k8s manifests containing Argo applications. The root of the tree.")
+	workdir := flag.String("workdir", ".", "Directory to run the command in.")
 	renderDir := flag.String("output", ".zz.auto-generated", "Path to store the compiled Argo applications.")
 	maxDepth := flag.Int("max-depth", InfiniteDepth, "Maximum depth for the depth first walk.")
 	hashStore := flag.String("hash-store", "sumfile", "The hashing backend to use. Can be `sumfile` or `json`.")
@@ -212,6 +223,12 @@ func main() {
 	ignoreValueFile := flag.String("ignore-value-file", "overrides-to-ignore", "Override file to ignore based on filename")
 	postRenderer := flag.String("post-renderer", "", "When provided, binary will be called after an application is rendered.")
 	flag.Parse()
+
+	// Runs the command in the specified directory
+	err := os.Chdir(*workdir)
+	if err != nil {
+		log.Fatal("Could not set workdir: ", err)
+	}
 
 	start := time.Now()
 	if err := helm.VerifyRenderDir(*renderDir); err != nil {
