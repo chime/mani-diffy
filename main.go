@@ -19,6 +19,8 @@ import (
 
 const InfiniteDepth = -1
 
+var ErrKustomizeNotSupported = errors.New("kustomize not supported")
+
 // Renderer is a function that can render an Argo application.
 type Renderer func(*v1alpha1.Application, string) error
 
@@ -137,7 +139,7 @@ func (w *Walker) walk(inputPath, outputPath string, depth, maxDepth int, visited
 			if hashGenerated != hash || emptyManifest {
 				log.Printf("No match detected. Render: %s\n", crd.ObjectMeta.Name)
 				if err := w.Render(crd, path); err != nil {
-					if errors.Is(err, errors.ErrUnsupported) {
+					if errors.Is(err, ErrKustomizeNotSupported) {
 						continue
 					}
 					return err
@@ -167,7 +169,7 @@ func (w *Walker) Render(application *v1alpha1.Application, output string) error 
 		render = w.HelmTemplate
 	case application.Spec.Source.Kustomize != nil:
 		log.Println("WARNING: kustomize not supported")
-		return errors.ErrUnsupported
+		return ErrKustomizeNotSupported
 	default:
 		render = w.CopySource
 	}
