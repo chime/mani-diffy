@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/1debit/mani-diffy/pkg/kustomize"
 	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 )
@@ -196,6 +197,10 @@ func GenerateHash(crd *v1alpha1.Application, ignoreValueFile string) (string, er
 		return "", err
 	}
 	fmt.Fprintf(finalHash, "%x\n", crdHash)
+
+	if crd.Spec.Source.Kustomize != nil {
+		return "", kustomize.ErrNotSupported
+	}
 
 	if crd.Spec.Source.Path != "" {
 		chartHash, err := generalHashFunction(crd.Spec.Source.Path)
