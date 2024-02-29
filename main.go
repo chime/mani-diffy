@@ -13,13 +13,12 @@ import (
 	"time"
 
 	"github.com/1debit/mani-diffy/pkg/helm"
+	"github.com/1debit/mani-diffy/pkg/kustomize"
 
 	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 )
 
 const InfiniteDepth = -1
-
-var ErrKustomizeNotSupported = errors.New("kustomize not supported")
 
 // Renderer is a function that can render an Argo application.
 type Renderer func(*v1alpha1.Application, string) error
@@ -127,8 +126,12 @@ func (w *Walker) walk(inputPath, outputPath string, depth, maxDepth int, visited
 			if err != nil {
 				return err
 			}
+
 			hashGenerated, err := w.GenerateHash(crd)
 			if err != nil {
+				if errors.Is(err, kustomize.ErrNotSupported) {
+					continue
+				}
 				return err
 			}
 
@@ -136,10 +139,11 @@ func (w *Walker) walk(inputPath, outputPath string, depth, maxDepth int, visited
 			if err != nil {
 				return err
 			}
+
 			if hashGenerated != hash || emptyManifest {
 				log.Printf("No match detected. Render: %s\n", crd.ObjectMeta.Name)
 				if err := w.Render(crd, path); err != nil {
-					if errors.Is(err, ErrKustomizeNotSupported) {
+					if errors.Is(err, kustomize.ErrNotSupported) {
 						continue
 					}
 					return err
@@ -169,7 +173,7 @@ func (w *Walker) Render(application *v1alpha1.Application, output string) error 
 		render = w.HelmTemplate
 	case application.Spec.Source.Kustomize != nil:
 		log.Println("WARNING: kustomize not supported")
-		return ErrKustomizeNotSupported
+		return kustomize.ErrNotSupported
 	default:
 		render = w.CopySource
 	}
