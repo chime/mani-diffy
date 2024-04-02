@@ -3,6 +3,7 @@ run:
   allow-parallel-runners: true
   timeout: 5m
   go: '1.20'
+  skip-dirs-use-default: false
 
 linters:
   enable:
