@@ -1,10 +1,10 @@
 # mani-diffy
 
-![Tests](https://github.com/1debit/mani-diffy/actions/workflows/tests.yaml/badge.svg)
+![Tests](https://github.com/chime/mani-diffy/actions/workflows/tests.yaml/badge.svg)
 
-This program walks a hierarchy of Argo CD Application templates, renders Kubernetes manifests from the input templates, and posts the rendered files back for the user to review and validate. 
+This program walks a hierarchy of Argo CD Application templates, renders Kubernetes manifests from the input templates, and posts the rendered files back for the user to review and validate.
 
-It is designed to be called from a CI job within a pull request, enabling the author to update templates and see the resulting manifests directly within the pull request before the changes are applied to the Kubernetes cluster. 
+It is designed to be called from a CI job within a pull request, enabling the author to update templates and see the resulting manifests directly within the pull request before the changes are applied to the Kubernetes cluster.
 
 The rendered manifests are kept within the repository, making diffs between revisions easy to parse, dramatically improving safety when updating complex application templates.
 
@@ -19,8 +19,8 @@ The rendered manifests are kept within the repository, making diffs between revi
 
 🫵 Submit a PR where you make a change to the overrides of the [`demo`](demo/README.md), and you'll see the [Github action]( [README](../../.github/workflows/generate-manifests-demos.yaml)) add a commit to your PR with the resulting changes.
 
-<img width="1099" alt="1" src="https://github.com/1debit/mani-diffy/assets/9005904/6b6d9e45-57f7-43ff-906f-ebf4c0a03ad9">
-<img width="1701" alt="2" src="https://github.com/1debit/mani-diffy/assets/9005904/03d4a49e-1fc9-40a1-9882-1c032b2d345b">
+<img width="1099" alt="1" src="https://github.com/chime/mani-diffy/assets/9005904/6b6d9e45-57f7-43ff-906f-ebf4c0a03ad9">
+<img width="1701" alt="2" src="https://github.com/chime/mani-diffy/assets/9005904/03d4a49e-1fc9-40a1-9882-1c032b2d345b">
 
 # See it in action in a video !
 
@@ -29,7 +29,7 @@ In this screen recording a pull request is opened to make the following changes 
 1. Bump the count of pods for the `foo` service in the prod cluster
 2. Add an annotation to all services
 
-https://github.com/1debit/mani-diffy/assets/9005904/6c496996-f7af-4932-bf5d-01a5b57bbd99
+https://github.com/chime/mani-diffy/assets/9005904/6c496996-f7af-4932-bf5d-01a5b57bbd99
 
 
 ## Post Renderers
@@ -44,7 +44,7 @@ The command will be called with the output directory as the first argument (e.g.
 
 ---
 
-## Pre-requisites 
+## Pre-requisites
 
 This is for a new user that is looking to use mani-diffy on a new repo.
 
@@ -55,7 +55,7 @@ In order to make use of mani-diffy on the repo that holds all of your ArgoCD app
 
 `mani-diffy` itself makes no assumptions about how the repo is structured, as long as it can successfully render the charts it encounters while walking the Application tree.
 
-However, you may find it useful to organize your repo similarly to the demo app, with 3 key directories : 
+However, you may find it useful to organize your repo similarly to the demo app, with 3 key directories :
 
 1. a "root" or "bootstrap" directory that holds all the ArgoCD applications manifests.
 2. a "charts" directory that contains all the helm charts needed for the ArgoCD applications.

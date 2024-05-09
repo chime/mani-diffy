@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/1debit/mani-diffy/pkg/helm"
-	"github.com/1debit/mani-diffy/pkg/kustomize"
+	"github.com/chime/mani-diffy/pkg/helm"
+	"github.com/chime/mani-diffy/pkg/kustomize"
 
 	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 )

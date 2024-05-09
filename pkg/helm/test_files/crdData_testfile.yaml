@@ -16,7 +16,7 @@ spec:
       valueFiles:
         - ../../overrides/bootstrap/prod-cluster.yaml
     path: demo/charts/app-of-apps
-    repoURL: https://github.com/1debit/mani-diffy
+    repoURL: https://github.com/chime/mani-diffy
     targetRevision: HEAD
   syncPolicy:
     syncOptions:

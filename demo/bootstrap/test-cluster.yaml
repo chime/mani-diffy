@@ -18,7 +18,7 @@ spec:
       valueFiles:
         - ../../overrides/bootstrap/test-cluster.yaml
     path: charts/app-of-apps
-    repoURL: https://github.com/1debit/mani-diffy.git
+    repoURL: https://github.com/chime/mani-diffy.git
     targetRevision: HEAD
   syncPolicy:
     syncOptions:
