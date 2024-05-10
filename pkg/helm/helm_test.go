@@ -224,8 +224,8 @@ func TestGenerateHashOnCrd(t *testing.T) {
 	crd := data[0]
 
 	hash, err := generateHashOnCrd(crd)
-	if err != nil || hash != "fba38c4479874778a2e0bf38c2e94f83d57d9f24c9c7d71e123bc5c1961ed936" {
-		t.Error("Failed to generate correctly")
+	if err != nil || hash != "7bfd65e963e76680dc5160b6a55c04c3d9780c84aee1413ae710e4b5279cfe14" {
+		t.Errorf("Failed to generate correctly, got %s", hash)
 	}
 }
 
@@ -300,7 +300,7 @@ func TestDifferenceInTwoDifferentFiles(t *testing.T) {
 func TestGenerateHashOnChart(t *testing.T) {
 	hash, _ := generalHashFunction("demo/charts/app-of-apps")
 	h := hex.EncodeToString(hash)
-	actualHash := "95630c1ec9b835536a3056d4dcbbd6e023111c5e4340ac80b945c2e3a4f8fc42"
+	actualHash := "13aa148adefa3d633e5ce95584d3c95297a4417977837040cd67f0afbca17b5a"
 	if h != actualHash {
 		t.Errorf("Failed to generate a generic hash on a chart. got: %s wanted: %s", h, actualHash)
 	}

@@ -1,4 +1,4 @@
-module github.com/1debit/mani-diffy
+module github.com/chime/mani-diffy
 
 go 1.20
 
