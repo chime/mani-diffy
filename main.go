@@ -226,6 +226,7 @@ func main() {
 	skipRenderKey := flag.String("skip-render-key", "do-not-render", "Key to not render")
 	ignoreValueFile := flag.String("ignore-value-file", "overrides-to-ignore", "Override file to ignore based on filename")
 	postRenderer := flag.String("post-renderer", "", "When provided, binary will be called after an application is rendered.")
+	debug := flag.Bool("debug", false, "When true provides additional logs.")
 	flag.Parse()
 
 	// Runs the command in the specified directory
@@ -247,7 +248,7 @@ func main() {
 	w := &Walker{
 		CopySource: CopySource,
 		HelmTemplate: func(application *v1alpha1.Application, output string) error {
-			return helm.Run(application, output, *skipRenderKey, *ignoreValueFile)
+			return helm.Run(application, output, *skipRenderKey, *ignoreValueFile, *debug)
 		},
 		GenerateHash: func(application *v1alpha1.Application) (string, error) {
 			return helm.GenerateHash(application, *ignoreValueFile)

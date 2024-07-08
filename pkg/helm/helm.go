@@ -101,7 +101,7 @@ func installDependencies(chartDirectory string) error {
 
 }
 
-func template(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueFile string) ([]byte, error) {
+func template(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueFile string) ([]byte, debug bool, error) {
 
 	chartPath := strings.Split(helmInfo.Spec.Source.Path, "/")
 	chart := fmt.Sprint("../" + chartPath[len(chartPath)-1])
@@ -118,8 +118,7 @@ func template(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueF
 		tmpFile = dataFile
 	}
 
-	cmd := exec.Command(
-		"helm",
+	args := []string{
 		"template",
 		chart,
 		"--set",
@@ -130,7 +129,13 @@ func template(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueF
 		tmpFile,
 		"-n",
 		helmInfo.Spec.Destination.Namespace,
-	)
+	}
+
+	if debug {
+		args = append(args, "--debug")
+	}
+
+	cmd := exec.Command("helm", args...)
 
 	if skipRenderKey != "" {
 		cmd.Args = append(cmd.Args, "--set", fmt.Sprintf("%s=%s", skipRenderKey, "CONSCIOUSLY_NOT_RENDERED"))
@@ -393,8 +398,8 @@ func generateHashOnCrd(crd *v1alpha1.Application) (string, error) {
 	return hex.EncodeToString(sum), nil
 }
 
-func Run(crd *v1alpha1.Application, output string, skipRenderKey string, ignoreValueFile string) error {
-	manifest, err := template(crd, skipRenderKey, ignoreValueFile)
+func Run(crd *v1alpha1.Application, output string, skipRenderKey string, ignoreValueFile string, debug bool) error {
+	manifest, err := template(crd, skipRenderKey, ignoreValueFile, debug)
 	if err != nil {
 		log.Printf(
 			"error generating manifest for %s error: %v\n",
