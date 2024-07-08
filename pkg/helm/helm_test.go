@@ -149,6 +149,27 @@ func TestTemplate(t *testing.T) {
 	}
 }
 
+func TestTemplateWithDebug(t *testing.T) {
+	data, err := Read("test_files/crdData_testfile.yaml")
+	if err != nil {
+		t.Error(err)
+	}
+	crdSpec := data[0]
+	if err := os.Chdir("../../"); err != nil {
+		t.Error(err)
+	}
+
+	manifest, err := template(crdSpec, "", "", true)
+	if err != nil {
+		log.Println(err)
+		t.Error("Template failed to render a template with debug")
+	}
+
+	if !strings.Contains(string(manifest), "---\n# Source:") {
+		t.Error("Expected debug information not found in rendered manifest")
+	}
+}
+
 func TestTemplateContent(t *testing.T) {
 	data, err := Read("pkg/helm/test_files/crdData_testfile.yaml")
 	if err != nil {
