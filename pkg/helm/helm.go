@@ -101,7 +101,7 @@ func installDependencies(chartDirectory string) error {
 
 }
 
-func template(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueFile string) ([]byte, debug bool, error) {
+func template(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueFile string, debug bool) ([]byte, error) {
 
 	chartPath := strings.Split(helmInfo.Spec.Source.Path, "/")
 	chart := fmt.Sprint("../" + chartPath[len(chartPath)-1])

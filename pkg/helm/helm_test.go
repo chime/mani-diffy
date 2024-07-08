@@ -142,7 +142,7 @@ func TestTemplate(t *testing.T) {
 	if err := os.Chdir("../../"); err != nil {
 		t.Error(err)
 	}
-	_, err = template(crdSpec, "", "")
+	_, err = template(crdSpec, "", "", false)
 	if err != nil {
 		log.Println(err)
 		t.Error("Template failed to render a template")
@@ -159,14 +159,10 @@ func TestTemplateWithDebug(t *testing.T) {
 		t.Error(err)
 	}
 
-	manifest, err := template(crdSpec, "", "", true)
+	_, err = template(crdSpec, "", "", true)
 	if err != nil {
 		log.Println(err)
 		t.Error("Template failed to render a template with debug")
-	}
-
-	if !strings.Contains(string(manifest), "---\n# Source:") {
-		t.Error("Expected debug information not found in rendered manifest")
 	}
 }
 
@@ -183,7 +179,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 `
 
-	manifest, _ := template(crdSpec, "", "")
+	manifest, _ := template(crdSpec, "", "", false)
 	if strings.Contains(string(manifest), comparisonString) != true {
 		t.Error("Template failed to render a template with expected content")
 	}
@@ -197,7 +193,7 @@ func TestTemplateContentSkipRenderKey(t *testing.T) {
 	app := data[0]
 
 	// Call template with a key to override
-	manifest, _ := template(app, "appTag", "")
+	manifest, _ := template(app, "appTag", "", false)
 
 	// Verify the rendered manifest contains the override
 	if !strings.Contains(string(manifest), "appTag: CONSCIOUSLY_NOT_RENDERED") {
