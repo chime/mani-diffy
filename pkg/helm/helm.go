@@ -430,3 +430,35 @@ func Read(inputCRD string) ([]*v1alpha1.Application, error) {
 
 	return crdSpecs, nil
 }
+
+// Added new function below to process multiple Applications concurrently
+func RunAll(crds []*v1alpha1.Application, outputBase string, skipRenderKey, ignoreValueFile string) error {
+	var wg sync.WaitGroup
+	// Buffer the error channel by the total number of CRDs
+	errCh := make(chan error, len(crds))
+
+	for _, crd := range crds {
+		wg.Add(1)
+		go func(crd *v1alpha1.Application) {
+			defer wg.Done()
+			// Create a subdirectory inside outputBase for each Application
+			outputDir := filepath.Join(outputBase, crd.ObjectMeta.Name)
+			if err := Run(crd, outputDir, skipRenderKey, ignoreValueFile); err != nil {
+				errCh <- fmt.Errorf("error processing %s: %w", crd.ObjectMeta.Name, err)
+			}
+		}(crd)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	var errs []string
+	for err := range errCh {
+		errs = append(errs, err.Error())
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("one or more errors occurred:\n%s", strings.Join(errs, "\n"))
+	}
+
+	return nil
+}
