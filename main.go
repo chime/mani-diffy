@@ -7,9 +7,9 @@ import (
 	"log"
 	"os"
 	"os/exec"
-
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chime/mani-diffy/pkg/helm"
@@ -44,9 +44,33 @@ type Walker struct {
 	ignoreSuffix string
 }
 
+// Thread-safe visited map
+type VisitedMap struct {
+	sync.RWMutex
+	visited map[string]bool
+}
+
+func NewVisitedMap() *VisitedMap {
+	return &VisitedMap{
+		visited: make(map[string]bool),
+	}
+}
+
+func (vm *VisitedMap) Set(path string) {
+	vm.Lock()
+	defer vm.Unlock()
+	vm.visited[path] = true
+}
+
+func (vm *VisitedMap) Get(path string) bool {
+	vm.RLock()
+	defer vm.RUnlock()
+	return vm.visited[path]
+}
+
 // Walk walks a directory tree looking for Argo applications and renders them
 func (w *Walker) Walk(inputPath, outputPath string, maxDepth int, hashes HashStore) error {
-	visited := make(map[string]bool)
+	visited := NewVisitedMap()
 
 	if err := w.walk(inputPath, outputPath, 0, maxDepth, visited, hashes); err != nil {
 		return err
@@ -63,7 +87,7 @@ func (w *Walker) Walk(inputPath, outputPath string, maxDepth int, hashes HashSto
 	return nil
 }
 
-func pruneUnvisited(visited map[string]bool, outputPath string) error {
+func pruneUnvisited(visited *VisitedMap, outputPath string) error {
 	files, err := os.ReadDir(outputPath)
 	if err != nil {
 		return err
@@ -75,7 +99,7 @@ func pruneUnvisited(visited map[string]bool, outputPath string) error {
 		}
 
 		path := filepath.Join(outputPath, f.Name())
-		if visited[path] {
+		if visited.Get(path) {
 			continue
 		}
 		if err := os.RemoveAll(path); err != nil {
@@ -86,7 +110,7 @@ func pruneUnvisited(visited map[string]bool, outputPath string) error {
 	return nil
 }
 
-func (w *Walker) walk(inputPath, outputPath string, depth, maxDepth int, visited map[string]bool, hashes HashStore) error {
+func (w *Walker) walk(inputPath, outputPath string, depth, maxDepth int, visited *VisitedMap, hashes HashStore) error {
 	if maxDepth != InfiniteDepth {
 		// If we've reached the max depth, stop walking
 		if depth > maxDepth {
@@ -100,65 +124,97 @@ func (w *Walker) walk(inputPath, outputPath string, depth, maxDepth int, visited
 	if err != nil {
 		return err
 	}
+
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(fi))
+	semaphore := make(chan struct{}, 10) // Limit concurrent goroutines
+
 	for _, file := range fi {
 		if !strings.Contains(file.Name(), ".yaml") {
 			continue
 		}
 
-		crds, err := helm.Read(filepath.Join(inputPath, file.Name()))
-		if err != nil {
-			return err
-		}
-		for _, crd := range crds {
-			if crd.Kind != "Application" {
-				continue
-			}
+		wg.Add(1)
+		semaphore <- struct{}{} // Acquire semaphore
 
-			if strings.HasSuffix(crd.ObjectMeta.Name, w.ignoreSuffix) {
-				continue
-			}
+		go func(file os.DirEntry) {
+			defer wg.Done()
+			defer func() { <-semaphore }() // Release semaphore
 
-			path := filepath.Join(outputPath, crd.ObjectMeta.Name)
-			visited[path] = true
-
-			hash, err := hashes.Get(crd.ObjectMeta.Name)
-			// COMPARE HASHES HERE. STEP INTO RENDER IF NO MATCH
+			crds, err := helm.Read(filepath.Join(inputPath, file.Name()))
 			if err != nil {
-				return err
+				errChan <- err
+				return
 			}
 
-			hashGenerated, err := w.GenerateHash(crd)
-			if err != nil {
-				if errors.Is(err, kustomize.ErrNotSupported) {
+			for _, crd := range crds {
+				if crd.Kind != "Application" {
 					continue
 				}
-				return err
-			}
 
-			emptyManifest, err := helm.EmptyManifest(filepath.Join(path, "manifest.yaml"))
-			if err != nil {
-				return err
-			}
+				if strings.HasSuffix(crd.ObjectMeta.Name, w.ignoreSuffix) {
+					continue
+				}
 
-			if hashGenerated != hash || emptyManifest {
-				log.Printf("No match detected. Render: %s\n", crd.ObjectMeta.Name)
-				if err := w.Render(crd, path); err != nil {
+				path := filepath.Join(outputPath, crd.ObjectMeta.Name)
+				visited.Set(path)
+
+				hash, err := hashes.Get(crd.ObjectMeta.Name)
+				if err != nil {
+					errChan <- err
+					return
+				}
+
+				hashGenerated, err := w.GenerateHash(crd)
+				if err != nil {
 					if errors.Is(err, kustomize.ErrNotSupported) {
 						continue
 					}
-					return err
+					errChan <- err
+					return
 				}
 
-				if err := hashes.Add(crd.ObjectMeta.Name, hashGenerated); err != nil {
-					return err
+				emptyManifest, err := helm.EmptyManifest(filepath.Join(path, "manifest.yaml"))
+				if err != nil {
+					errChan <- err
+					return
+				}
+
+				if hashGenerated != hash || emptyManifest {
+					log.Printf("No match detected. Render: %s\n", crd.ObjectMeta.Name)
+					if err := w.Render(crd, path); err != nil {
+						if errors.Is(err, kustomize.ErrNotSupported) {
+							continue
+						}
+						errChan <- err
+						return
+					}
+
+					if err := hashes.Add(crd.ObjectMeta.Name, hashGenerated); err != nil {
+						errChan <- err
+						return
+					}
+				}
+
+				if err := w.walk(path, outputPath, depth+1, maxDepth, visited, hashes); err != nil {
+					errChan <- err
+					return
 				}
 			}
+		}(file)
+	}
 
-			if err := w.walk(path, outputPath, depth+1, maxDepth, visited, hashes); err != nil {
-				return err
-			}
+	// Wait for all goroutines to complete
+	wg.Wait()
+	close(errChan)
+
+	// Check for any errors
+	for err := range errChan {
+		if err != nil {
+			return err
 		}
 	}
+
 	return nil
 }
 
