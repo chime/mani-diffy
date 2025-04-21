@@ -68,6 +68,49 @@ func (vm *VisitedMap) Get(path string) bool {
 	return vm.visited[path]
 }
 
+// WorkerPool manages a pool of workers for processing files
+type WorkerPool struct {
+	workers int
+	tasks   chan func()
+	wg      sync.WaitGroup
+}
+
+func NewWorkerPool(workers int) *WorkerPool {
+	pool := &WorkerPool{
+		workers: workers,
+		tasks:   make(chan func(), workers), // Buffer size matches worker count
+	}
+	pool.start()
+	return pool
+}
+
+func (p *WorkerPool) start() {
+	for i := 0; i < p.workers; i++ {
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			for task := range p.tasks {
+				task()
+			}
+		}()
+	}
+}
+
+func (p *WorkerPool) Submit(task func()) {
+	p.tasks <- task
+}
+
+func (p *WorkerPool) Wait() {
+	close(p.tasks)
+	p.wg.Wait()
+}
+
+// BatchProcessor handles batched file operations
+type BatchProcessor struct {
+	files []os.DirEntry
+	path  string
+}
+
 // Walk walks a directory tree looking for Argo applications and renders them
 func (w *Walker) Walk(inputPath, outputPath string, maxDepth int, hashes HashStore) error {
 	visited := NewVisitedMap()
@@ -112,7 +155,6 @@ func pruneUnvisited(visited *VisitedMap, outputPath string) error {
 
 func (w *Walker) walk(inputPath, outputPath string, depth, maxDepth int, visited *VisitedMap, hashes HashStore) error {
 	if maxDepth != InfiniteDepth {
-		// If we've reached the max depth, stop walking
 		if depth > maxDepth {
 			return nil
 		}
@@ -125,22 +167,17 @@ func (w *Walker) walk(inputPath, outputPath string, depth, maxDepth int, visited
 		return err
 	}
 
-	var wg sync.WaitGroup
+	// Create a worker pool with optimal size
+	pool := NewWorkerPool(4)
 	errChan := make(chan error, len(fi))
-	semaphore := make(chan struct{}, 10) // Limit concurrent goroutines
 
 	for _, file := range fi {
 		if !strings.Contains(file.Name(), ".yaml") {
 			continue
 		}
 
-		wg.Add(1)
-		semaphore <- struct{}{} // Acquire semaphore
-
-		go func(file os.DirEntry) {
-			defer wg.Done()
-			defer func() { <-semaphore }() // Release semaphore
-
+		file := file // Create a new variable for the closure
+		pool.Submit(func() {
 			crds, err := helm.Read(filepath.Join(inputPath, file.Name()))
 			if err != nil {
 				errChan <- err
@@ -157,32 +194,26 @@ func (w *Walker) walk(inputPath, outputPath string, depth, maxDepth int, visited
 				}
 
 				path := filepath.Join(outputPath, crd.ObjectMeta.Name)
+
+				// Create the output directory if it doesn't exist
+				if err := os.MkdirAll(path, 0755); err != nil {
+					errChan <- err
+					return
+				}
+
 				visited.Set(path)
 
+				// Check hash first to avoid unnecessary operations
 				hash, err := hashes.Get(crd.ObjectMeta.Name)
 				if err != nil {
 					errChan <- err
 					return
 				}
 
-				hashGenerated, err := w.GenerateHash(crd)
-				if err != nil {
-					if errors.Is(err, kustomize.ErrNotSupported) {
-						continue
-					}
-					errChan <- err
-					return
-				}
-
-				emptyManifest, err := helm.EmptyManifest(filepath.Join(path, "manifest.yaml"))
-				if err != nil {
-					errChan <- err
-					return
-				}
-
-				if hashGenerated != hash || emptyManifest {
-					log.Printf("No match detected. Render: %s\n", crd.ObjectMeta.Name)
-					if err := w.Render(crd, path); err != nil {
+				// Only proceed with hash generation if needed
+				if hash == "" {
+					hashGenerated, err := w.GenerateHash(crd)
+					if err != nil {
 						if errors.Is(err, kustomize.ErrNotSupported) {
 							continue
 						}
@@ -190,22 +221,40 @@ func (w *Walker) walk(inputPath, outputPath string, depth, maxDepth int, visited
 						return
 					}
 
-					if err := hashes.Add(crd.ObjectMeta.Name, hashGenerated); err != nil {
+					emptyManifest, err := helm.EmptyManifest(filepath.Join(path, "manifest.yaml"))
+					if err != nil {
 						errChan <- err
 						return
 					}
+
+					if emptyManifest {
+						log.Printf("No match detected. Render: %s\n", crd.ObjectMeta.Name)
+						if err := w.Render(crd, path); err != nil {
+							if errors.Is(err, kustomize.ErrNotSupported) {
+								continue
+							}
+							errChan <- err
+							return
+						}
+
+						if err := hashes.Add(crd.ObjectMeta.Name, hashGenerated); err != nil {
+							errChan <- err
+							return
+						}
+					}
 				}
 
+				// Process subdirectories sequentially
 				if err := w.walk(path, outputPath, depth+1, maxDepth, visited, hashes); err != nil {
 					errChan <- err
 					return
 				}
 			}
-		}(file)
+		})
 	}
 
-	// Wait for all goroutines to complete
-	wg.Wait()
+	// Wait for all workers to complete
+	pool.Wait()
 	close(errChan)
 
 	// Check for any errors
