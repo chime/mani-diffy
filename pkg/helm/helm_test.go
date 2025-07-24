@@ -12,9 +12,9 @@ import (
 func TestHelm(t *testing.T) {
 	// Set up tests to use current package's testdata as the working directory
 	oldWD, _ := os.Getwd()
-	os.Chdir("testdata")
+	_ = os.Chdir("testdata")
 	t.Cleanup(func() {
-		os.Chdir(oldWD)
+		_ = os.Chdir(oldWD)
 	})
 
 	t.Run("Read", func(t *testing.T) {
