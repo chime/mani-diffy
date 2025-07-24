@@ -97,6 +97,26 @@ func TestHelm(t *testing.T) {
 		}
 	})
 
+	t.Run("BuildParametersIgnoreMissingFile", func(t *testing.T) {
+		data, err := Read("crdData_testfile_4.yaml")
+		if err != nil {
+			t.Error(err)
+		}
+		crd := data[0]
+		setValues, fileValues := buildParams(crd, "")
+
+		if setValues != "env=test" {
+			t.Error("setValues is not correct")
+		}
+
+		want := "../../overrides/service/bar/base.yaml,../../overrides/service/bar/test.yaml"
+		got := fileValues
+
+		if want != got {
+			t.Errorf("fileValues is not correct, want: %q, got: %q", want, got)
+		}
+	})
+
 	t.Run("CreateTempFile", func(t *testing.T) {
 		fileContent := `
 apiVersion: argoproj.io/v1alpha1

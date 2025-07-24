@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -53,7 +54,12 @@ func buildParams(payload *v1alpha1.Application, ignoreValueFile string) (string,
 
 	}
 	for i := 0; i < len(helmFiles); i++ {
-		if ignoreValueFile == "" || !strings.Contains(helmFiles[i], ignoreValueFile) {
+		isExplicitlyIgnored := ignoreValueFile != "" && strings.Contains(helmFiles[i], ignoreValueFile)
+		isMissingAndShouldBeIgnored :=
+			!fileExists(path.Join(payload.Spec.Source.Path, helmFiles[i])) &&
+				payload.Spec.Source.Helm.IgnoreMissingValueFiles
+
+		if !isExplicitlyIgnored && !isMissingAndShouldBeIgnored {
 			fileValues += fmt.Sprintf("%s,", helmFiles[i])
 		}
 	}
@@ -429,4 +435,9 @@ func Read(inputCRD string) ([]*v1alpha1.Application, error) {
 	}
 
 	return crdSpecs, nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return !os.IsNotExist(err)
 }
