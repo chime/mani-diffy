@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -54,12 +53,7 @@ func buildParams(payload *v1alpha1.Application, ignoreValueFile string) (string,
 
 	}
 	for i := 0; i < len(helmFiles); i++ {
-		isExplicitlyIgnored := ignoreValueFile != "" && strings.Contains(helmFiles[i], ignoreValueFile)
-		isMissingAndShouldBeIgnored :=
-			!fileExists(path.Join(payload.Spec.Source.Path, helmFiles[i])) &&
-				payload.Spec.Source.Helm.IgnoreMissingValueFiles
-
-		if !isExplicitlyIgnored && !isMissingAndShouldBeIgnored {
+		if !ignoredValueFile(payload, helmFiles[i], ignoreValueFile) {
 			fileValues += fmt.Sprintf("%s,", helmFiles[i])
 		}
 	}
@@ -219,11 +213,9 @@ func GenerateHash(crd *v1alpha1.Application, ignoreValueFile string) (string, er
 	if crd.Spec.Source.Helm != nil && len(crd.Spec.Source.Helm.ValueFiles) > 0 {
 		oHash := sha256.New()
 		overrideFiles := crd.Spec.Source.Helm.ValueFiles
-		matchDots := regexp.MustCompile(`\.\.\/`)
 		for i := 0; i < len(overrideFiles); i++ {
-			if ignoreValueFile == "" || !strings.Contains(overrideFiles[i], ignoreValueFile) {
-				trimmedFilename := matchDots.ReplaceAllString(overrideFiles[i], "")
-				oHashReturned, err := generalHashFunction(trimmedFilename)
+			if !ignoredValueFile(crd, overrideFiles[i], ignoreValueFile) {
+				oHashReturned, err := generalHashFunction(path.Join(crd.Spec.Source.Path, overrideFiles[i]))
 				if err != nil {
 					return "", err
 				}
@@ -435,6 +427,15 @@ func Read(inputCRD string) ([]*v1alpha1.Application, error) {
 	}
 
 	return crdSpecs, nil
+}
+
+func ignoredValueFile(crd *v1alpha1.Application, f string, ignoreValueFile string) bool {
+	isExplicitlyIgnored := ignoreValueFile != "" && strings.Contains(f, ignoreValueFile)
+	isMissingAndShouldBeIgnored :=
+		!fileExists(path.Join(crd.Spec.Source.Path, f)) &&
+			crd.Spec.Source.Helm.IgnoreMissingValueFiles
+
+	return isExplicitlyIgnored || isMissingAndShouldBeIgnored
 }
 
 func fileExists(path string) bool {

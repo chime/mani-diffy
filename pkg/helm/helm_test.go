@@ -224,6 +224,7 @@ kind: Application
 		}
 
 		for _, tt := range testFiles {
+			tt := tt
 			t.Run(tt.name, func(t *testing.T) {
 				t.Parallel()
 				hash, err := generalHashFunction(tt.file) //nolint:govet
@@ -323,6 +324,54 @@ kind: Application
 		actualHash := "13aa148adefa3d633e5ce95584d3c95297a4417977837040cd67f0afbca17b5a"
 		if h != actualHash {
 			t.Errorf("Failed to generate a generic hash on a chart. got: %s wanted: %s", h, actualHash)
+		}
+	})
+
+	t.Run("GenerateHash", func(t *testing.T) {
+		testFiles := []struct {
+			name            string
+			file            string
+			ignoreValueFile string
+			hash            string
+		}{
+			{
+				name:            "Generating hash for an Application",
+				file:            "crdData_testfile_3.yaml",
+				ignoreValueFile: "",
+				hash:            "7ce0306f218c7147b388dbb1ec2fa78389e44ebd11ca31b208e085b82158d787",
+			},
+			{
+				name:            "Generate hash for an application with ignoreMissingValueFiles and a missing value file",
+				file:            "crdData_testfile_4.yaml",
+				ignoreValueFile: "",
+				hash:            "349f7da89b1c47362663daedb6fcc28980d017613a9cb9da7d53bb852467fa6c",
+			},
+		}
+
+		for _, tt := range testFiles {
+			tt := tt
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				data, err := Read(tt.file)
+				if err != nil {
+					t.Error(err)
+				}
+				if len(data) != 1 {
+					t.Fatal("This test can work only with one Application at a time")
+				}
+				crd := data[0]
+
+				got, err := GenerateHash(crd, tt.ignoreValueFile)
+				if err != nil {
+					t.Error(err)
+				}
+
+				want := tt.hash //nolint:govet
+				if got != want {
+					t.Errorf("Failed to generate a correct hash on an overrides. got: %s want %s", got, want)
+				}
+			})
 		}
 	})
 
