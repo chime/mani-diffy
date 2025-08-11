@@ -62,7 +62,6 @@ However, you may find it useful to organize your repo similarly to the demo app,
 3. a "rendered" or "generated" directory, where all rendered charts will be committed.
 
 You can see an example of that in the [`demo`](demo/README.md) directory.
-
 # FAQ
 
 Q: Is ArgoCD using the rendered manifests in `.zz.auto-generated` ?
