@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 
 	yaml "gopkg.in/yaml.v3"
 )
@@ -33,6 +34,7 @@ type JSONHashStore struct {
 	path     string
 	hashes   map[string]string
 	strategy string
+	mu       sync.RWMutex
 }
 
 func NewJSONHashStore(path, strategy string) (*JSONHashStore, error) {
@@ -61,11 +63,15 @@ func NewJSONHashStore(path, strategy string) (*JSONHashStore, error) {
 }
 
 func (s *JSONHashStore) Add(name, hash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.hashes[name] = hash
 	return nil
 }
 
 func (s *JSONHashStore) Get(name string) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.hashes[name], nil
 }
 
@@ -75,7 +81,9 @@ func (s *JSONHashStore) Save() error {
 		return nil
 	}
 
+	s.mu.RLock()
 	b, err := json.MarshalIndent(s.hashes, "", "  ")
+	s.mu.RUnlock()
 	if err != nil {
 		return err
 	}
