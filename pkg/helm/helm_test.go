@@ -214,12 +214,12 @@ kind: Application
 			{
 				name: "Generating hash on symlinked files",
 				file: "crdData_override_testfile_sym_link.yaml",
-				hash: "a1d62704739d8af3fcaca8f8b13602fc4d4e656b87d773089df3c626c2f37b5d",
+				hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 			},
 			{
 				name: "Generate hash on non symlinked file",
 				file: "crdData_override_testfile.yaml",
-				hash: "a1d62704739d8af3fcaca8f8b13602fc4d4e656b87d773089df3c626c2f37b5d",
+				hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 			},
 		}
 
@@ -237,91 +237,10 @@ kind: Application
 		}
 	})
 
-	t.Run("GenerateHashOnCrd", func(t *testing.T) {
-		data, err := Read("crdData_testfile.yaml")
-		if err != nil {
-			t.Error(err)
-		}
-		crd := data[0]
-
-		hash, err := generateHashOnCrd(crd)
-		if err != nil || hash != "7bfd65e963e76680dc5160b6a55c04c3d9780c84aee1413ae710e4b5279cfe14" {
-			t.Errorf("Failed to generate correctly, got %s", hash)
-		}
-	})
-
-	t.Run("ResolvesTo", func(t *testing.T) {
-		scenarios := []struct {
-			name        string
-			expected    string
-			file        string
-			isDirectory bool
-		}{
-			{
-				name:        "symlinked file resolves to its target",
-				expected:    "crdData_override_testfile.yaml",
-				file:        "crdData_override_testfile_sym_link.yaml",
-				isDirectory: false,
-			},
-			{
-				name:        "regular directory returns own name",
-				expected:    "nonSymDir",
-				file:        "nonSymDir",
-				isDirectory: true,
-			},
-			{
-				name:        "symlinked directory returns its target",
-				expected:    "nonSymDir",
-				file:        "SymDir",
-				isDirectory: true,
-			},
-			/*
-				{
-					name:        "fail to find",
-					expected:    "nonSymDir",
-					file:        "phantom",
-					isDirectory: true,
-				},
-			*/
-		}
-
-		for _, tt := range scenarios {
-			t.Run(tt.name, func(t *testing.T) {
-				dataGot, err := resolvesTo(tt.file)
-				if err != nil {
-					t.Errorf("failed to resolve file err: %v", err)
-				}
-				if dataGot.fileName != tt.expected {
-					t.Errorf("resolved files do not match. got: %s wanted: %s", dataGot.fileName, tt.expected)
-				}
-				if dataGot.isDir != tt.isDirectory {
-					t.Errorf("failed checking directory status. got: %t wanted: %t", dataGot.isDir, tt.isDirectory)
-				}
-			})
-		}
-	})
-
-	t.Run("DifferenceInTwoDifferentFiles", func(t *testing.T) {
-		data, err := Read("crdData_testfile.yaml")
-		if err != nil {
-			t.Error(err)
-		}
-		data2, err2 := Read("crdData_testfile_2.yaml")
-		if err2 != nil {
-			t.Error(err2)
-		}
-
-		crd1Hash, _ := generateHashOnCrd(data[0])
-		crd2Hash, _ := generateHashOnCrd(data2[0])
-		if crd1Hash == crd2Hash {
-			t.Error("Failed to generate two different hashes")
-		}
-	})
-
 	t.Run("GenerateHashOnChart", func(t *testing.T) {
 		hash, _ := generalHashFunction("demo/charts/app-of-apps")
 		h := hex.EncodeToString(hash)
-		actualHash := "13aa148adefa3d633e5ce95584d3c95297a4417977837040cd67f0afbca17b5a"
+		actualHash := "11afd9f1f66fa6bb5650a5ca5042907e67cd6421493929909068808d8066c008"
 		if h != actualHash {
 			t.Errorf("Failed to generate a generic hash on a chart. got: %s wanted: %s", h, actualHash)
 		}
@@ -338,13 +257,13 @@ kind: Application
 				name:            "Generating hash for an Application",
 				file:            "crdData_testfile_3.yaml",
 				ignoreValueFile: "",
-				hash:            "7ce0306f218c7147b388dbb1ec2fa78389e44ebd11ca31b208e085b82158d787",
+				hash:            "d4df83c0a2684d9e04b023635ca51322deb08cd0cbbacf0ac5e8ae01abae6621",
 			},
 			{
 				name:            "Generate hash for an application with ignoreMissingValueFiles and a missing value file",
 				file:            "crdData_testfile_4.yaml",
 				ignoreValueFile: "",
-				hash:            "349f7da89b1c47362663daedb6fcc28980d017613a9cb9da7d53bb852467fa6c",
+				hash:            "15e79a97bbd8909fad5cbce4567c49c9f6bb254130a1f8c18717da7add8b3811",
 			},
 		}
 

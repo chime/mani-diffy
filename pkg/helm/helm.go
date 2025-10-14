@@ -7,17 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"os"
 	"os/exec"
 	"path"
-	"path/filepath"
-	"sort"
 	"strings"
-	"sync"
 
 	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	"github.com/chime/mani-diffy/pkg/digest"
 	"github.com/chime/mani-diffy/pkg/kustomize"
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 )
@@ -192,11 +189,9 @@ func EmptyManifest(manifest string) (bool, error) {
 func GenerateHash(crd *v1alpha1.Application, ignoreValueFile string) (string, error) {
 	finalHash := sha256.New()
 
-	crdHash, err := generateHashOnCrd(crd)
-	if err != nil {
+	if _, err := finalHash.Write([]byte(crd.String())); err != nil {
 		return "", err
 	}
-	fmt.Fprintf(finalHash, "%x\n", crdHash)
 
 	if crd.Spec.Source.Kustomize != nil {
 		return "", kustomize.ErrNotSupported
@@ -230,165 +225,12 @@ func GenerateHash(crd *v1alpha1.Application, ignoreValueFile string) (string, er
 }
 
 func generalHashFunction(dirFilepath string) ([]byte, error) {
-	m, err := sha256Dir(dirFilepath)
-	if err != nil {
+	h := sha256.New()
+	if err := digest.Digest(dirFilepath, h); err != nil {
 		log.Println(err)
 		return []byte{}, err
 	}
-	var paths []string
-	for path := range m {
-		paths = append(paths, path)
-	}
-	// Not sure if needed but I'm sorting for deterministic behavior
-	sort.Strings(paths)
-	hash := sha256.New()
-	for _, path := range paths {
-		// if a single file, just return the hash
-		if len(paths) == 1 {
-			value := m[path]
-			slice := value[:]
-			return slice, nil
-		}
-		fmt.Fprintf(hash, "%x  %s\n", m[path], path)
-	}
-	// log.Printf("FINAL HASH: %v\n", hex.EncodeToString(hash.Sum(nil)))
-	return hash.Sum(nil), nil
-}
-
-// A result is the product of reading and summing a file using MD5.
-type result struct {
-	path string
-	sum  [sha256.Size]byte
-	err  error
-}
-
-type nonRegularFile struct {
-	fileName string
-	isDir    bool
-}
-
-func resolvesTo(filePath string) (nonRegularFile, error) {
-	fileData := nonRegularFile{}
-	info, err := os.Lstat(filePath)
-	if err != nil {
-		return fileData, fmt.Errorf("failed to lstat file: %w", err)
-	}
-
-	if info.IsDir() {
-		fileData.fileName = filePath
-		fileData.isDir = true
-		return fileData, nil
-	}
-
-	if info.Mode()&fs.ModeSymlink != 0 {
-		fileName, err := os.Readlink(filePath)
-		if err != nil {
-			return fileData, fmt.Errorf("failed to follow symlink: %w", err)
-		}
-		fileName = strings.ReplaceAll(filePath, info.Name(), fileName)
-		fileData.fileName = fileName
-		fileInfo, err := os.Lstat(fileName)
-		if err != nil {
-			return fileData, fmt.Errorf("failed to lstat file: %w", err)
-		}
-		if fileInfo.IsDir() {
-			fileData.isDir = true
-			return fileData, nil
-		}
-	}
-	return fileData, nil
-}
-
-// sumFiles starts goroutines to walk the directory tree at root and digest each
-// regular file.  These goroutines send the results of the digests on the result
-// channel and send the result of the walk on the error channel.  If done is
-// closed, sumFiles abandons its work.
-func sumFiles(done <-chan struct{}, root string) (<-chan result, <-chan error) {
-	// For each regular file, start a goroutine that sums the file and sends
-	// the result on c.  Send the result of the walk on errc.
-	c := make(chan result)
-	errc := make(chan error, 1)
-	go func() { // HL
-		var wg sync.WaitGroup
-		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return fmt.Errorf("error walking the file path %s: %w", root, err)
-			}
-			if !info.Mode().IsRegular() {
-				resolvedInfo, err := resolvesTo(root)
-				if err != nil {
-					return err
-				}
-				if resolvedInfo.isDir {
-					// TODO: figure out how to handle dirs and
-					// symlinked dirs
-					return nil
-				}
-				path = resolvedInfo.fileName
-			}
-			wg.Add(1)
-			go func() { // HL
-				data, err := os.ReadFile(path)
-				select {
-				case c <- result{path, sha256.Sum256(data), err}: // HL
-				case <-done: // HL
-				}
-				wg.Done()
-			}()
-			// Abort the walk if done is closed.
-			select {
-			case <-done: // HL
-				return errors.New("walk canceled")
-			default:
-				return nil
-			}
-		})
-		// Walk has returned, so all calls to wg.Add are done.  Start a
-		// goroutine to close c once all the sends are done.
-		go func() { // HL
-			wg.Wait()
-			close(c) // HL
-		}()
-		// No select needed here, since errc is buffered.
-		errc <- err // HL
-	}()
-	return c, errc
-}
-
-// sha256Dir reads all the files in the file tree rooted at root and returns a map
-// from file path to the sha256 sum of the file's contents.  If the directory walk
-// fails or any read operation fails, sha256Dir returns an error.  In that case,
-// sha256Dir does not wait for inflight read operations to complete.
-func sha256Dir(root string) (map[string][sha256.Size]byte, error) {
-	// sha256Dir closes the done channel when it returns; it may do so before
-	// receiving all the values from c and errc.
-	done := make(chan struct{}) // HLdone
-	defer close(done)           // HLdone
-
-	c, errc := sumFiles(done, root) // HLdone
-
-	m := make(map[string][sha256.Size]byte)
-	for r := range c { // HLrange
-		if r.err != nil {
-			return nil, r.err
-		}
-		m[r.path] = r.sum
-	}
-	if err := <-errc; err != nil {
-		return nil, err
-	}
-	return m, nil
-}
-
-func generateHashOnCrd(crd *v1alpha1.Application) (string, error) {
-	hash := sha256.New()
-	crdString := crd.String()
-	crdByte := []byte(crdString)
-	if _, err := hash.Write(crdByte); err != nil {
-		return "", fmt.Errorf("error generating hash for the %s crd: %w", crd.ObjectMeta.Name, err)
-	}
-	sum := hash.Sum(nil)
-	return hex.EncodeToString(sum), nil
+	return h.Sum(nil), nil
 }
 
 func Run(crd *v1alpha1.Application, output string, skipRenderKey string, ignoreValueFile string) error {
