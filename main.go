@@ -236,8 +236,66 @@ func PostRender(command string) PostRenderer {
 	}
 }
 
+type environment struct {
+	region   string
+	env      string
+	rootPath string
+}
+
+func discoverEnvironments(rootsDir string) ([]environment, error) {
+	regions, err := os.ReadDir(rootsDir)
+	if err != nil {
+		return nil, fmt.Errorf("error reading roots-dir %s: %w", rootsDir, err)
+	}
+
+	var envs []environment
+	for _, region := range regions {
+		if !region.IsDir() {
+			continue
+		}
+		regionPath := filepath.Join(rootsDir, region.Name())
+		entries, err := os.ReadDir(regionPath)
+		if err != nil {
+			return nil, fmt.Errorf("error reading region dir %s: %w", regionPath, err)
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			envs = append(envs, environment{
+				region:   region.Name(),
+				env:      entry.Name(),
+				rootPath: filepath.Join(regionPath, entry.Name()),
+			})
+		}
+	}
+	return envs, nil
+}
+
+func computeOutputPath(renderDir, region, env string) string {
+	if env == "nonstable" {
+		return filepath.Join(renderDir, "root-nonstable-a004")
+	}
+
+	regionNumber := "1"
+	for i := len(region) - 1; i >= 0; i-- {
+		if region[i] >= '0' && region[i] <= '9' {
+			// Find the start of the trailing number
+			j := i
+			for j > 0 && region[j-1] >= '0' && region[j-1] <= '9' {
+				j--
+			}
+			regionNumber = region[j : i+1]
+			break
+		}
+	}
+
+	return filepath.Join(renderDir, fmt.Sprintf("root-use%s-%s", regionNumber, env))
+}
+
 func main() {
 	root := flag.String("root", "bootstrap", "Directory to initially look for k8s manifests containing Argo applications. The root of the tree.")
+	rootsDir := flag.String("roots-dir", "", "Parent directory containing <region>/<env> subdirectories. When set, processes all environments in a single invocation. Mutually exclusive with -root.")
 	workdir := flag.String("workdir", ".", "Directory to run the command in.")
 	renderDir := flag.String("output", ".zz.auto-generated", "Path to store the compiled Argo applications.")
 	maxDepth := flag.Int("max-depth", InfiniteDepth, "Maximum depth for the depth first walk.")
@@ -256,14 +314,6 @@ func main() {
 	}
 
 	start := time.Now()
-	if err := helm.VerifyRenderDir(*renderDir); err != nil {
-		log.Fatal(err)
-	}
-
-	h, err := getHashStore(*hashStore, *hashStrategy, *renderDir)
-	if err != nil {
-		log.Fatal(err)
-	}
 
 	w := &Walker{
 		CopySource: CopySource,
@@ -280,9 +330,37 @@ func main() {
 		w.PostRender = PostRender(*postRenderer)
 	}
 
-	if err := w.Walk(*root, *renderDir, *maxDepth, h); err != nil {
-		log.Fatal(err)
+	if *rootsDir != "" {
+		envs, err := discoverEnvironments(*rootsDir)
+		if err != nil {
+			log.Fatal(err)
+		}
+		for _, e := range envs {
+			outputPath := computeOutputPath(*renderDir, e.region, e.env)
+			if err := helm.VerifyRenderDir(outputPath); err != nil {
+				log.Fatal(err)
+			}
+			h, err := getHashStore(*hashStore, *hashStrategy, outputPath)
+			if err != nil {
+				log.Fatal(err)
+			}
+			if err := w.Walk(e.rootPath, outputPath, *maxDepth, h); err != nil {
+				log.Fatal(err)
+			}
+		}
+	} else {
+		if err := helm.VerifyRenderDir(*renderDir); err != nil {
+			log.Fatal(err)
+		}
+		h, err := getHashStore(*hashStore, *hashStrategy, *renderDir)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := w.Walk(*root, *renderDir, *maxDepth, h); err != nil {
+			log.Fatal(err)
+		}
 	}
+
 	log.Printf("mani-diffy took %v to run", time.Since(start))
 }
 
