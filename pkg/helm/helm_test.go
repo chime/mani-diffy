@@ -5,9 +5,21 @@ import (
 	"errors"
 	"log"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 )
+
+func mapKeys(m map[string][32]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
 
 func TestHelm(t *testing.T) {
 	// Set up tests to use current package's testdata as the working directory
@@ -250,54 +262,65 @@ kind: Application
 		}
 	})
 
-	t.Run("ResolvesTo", func(t *testing.T) {
-		scenarios := []struct {
-			name        string
-			expected    string
-			file        string
-			isDirectory bool
-		}{
-			{
-				name:        "symlinked file resolves to its target",
-				expected:    "crdData_override_testfile.yaml",
-				file:        "crdData_override_testfile_sym_link.yaml",
-				isDirectory: false,
-			},
-			{
-				name:        "regular directory returns own name",
-				expected:    "nonSymDir",
-				file:        "nonSymDir",
-				isDirectory: true,
-			},
-			{
-				name:        "symlinked directory returns its target",
-				expected:    "nonSymDir",
-				file:        "SymDir",
-				isDirectory: true,
-			},
-			/*
-				{
-					name:        "fail to find",
-					expected:    "nonSymDir",
-					file:        "phantom",
-					isDirectory: true,
-				},
-			*/
+	t.Run("SumFilesFollowsDirSymlink", func(t *testing.T) {
+		symMap, err := sha256Dir("sym_chart")
+		if err != nil {
+			t.Fatalf("sha256Dir(sym_chart): %v", err)
+		}
+		expandedMap, err := sha256Dir("sym_chart_expanded")
+		if err != nil {
+			t.Fatalf("sha256Dir(sym_chart_expanded): %v", err)
 		}
 
-		for _, tt := range scenarios {
-			t.Run(tt.name, func(t *testing.T) {
-				dataGot, err := resolvesTo(tt.file)
+		// Compare per-file content sums under matching relative paths.
+		// generalHashFunction folds the absolute key into its hash, so we
+		// can't just compare hex hashes - we have to strip the root prefix.
+		stripPrefix := func(m map[string][32]byte, prefix string) map[string][32]byte {
+			out := make(map[string][32]byte, len(m))
+			for k, v := range m {
+				rel, err := filepath.Rel(prefix, k)
 				if err != nil {
-					t.Errorf("failed to resolve file err: %v", err)
+					t.Fatalf("filepath.Rel(%q, %q): %v", prefix, k, err)
 				}
-				if dataGot.fileName != tt.expected {
-					t.Errorf("resolved files do not match. got: %s wanted: %s", dataGot.fileName, tt.expected)
-				}
-				if dataGot.isDir != tt.isDirectory {
-					t.Errorf("failed checking directory status. got: %t wanted: %t", dataGot.isDir, tt.isDirectory)
-				}
-			})
+				out[rel] = v
+			}
+			return out
+		}
+		got := stripPrefix(symMap, "sym_chart")
+		want := stripPrefix(expandedMap, "sym_chart_expanded")
+
+		gotKeys := mapKeys(got)
+		wantKeys := mapKeys(want)
+		if len(got) != len(want) {
+			t.Fatalf("file count mismatch: sym_chart=%v expanded=%v", gotKeys, wantKeys)
+		}
+		for k, v := range want {
+			if got[k] != v {
+				t.Errorf("hash mismatch at %s: sym_chart=%x expanded=%x", k, got[k], v)
+			}
+		}
+	})
+
+	t.Run("SumFilesHandlesSymlinkCycle", func(t *testing.T) {
+		done := make(chan error, 1)
+		go func() {
+			_, err := sha256Dir("cycle_chart")
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("expected nil error for cycle_chart, got: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("sha256Dir on cycle_chart did not terminate within 5s - cycle detection broken")
+		}
+	})
+
+	t.Run("SumFilesBrokenSymlinkErrors", func(t *testing.T) {
+		_, err := sha256Dir("broken_symlink_chart")
+		if err == nil {
+			t.Error("expected error for broken symlink, got nil")
 		}
 	})
 

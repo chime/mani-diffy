@@ -1,0 +1,4 @@
+apiVersion: v2
+name: sym-chart
+description: Fixture chart for sumFiles directory-symlink test
+version: 0.1.0
