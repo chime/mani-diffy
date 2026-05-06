@@ -262,95 +262,93 @@ type result struct {
 	err  error
 }
 
-type nonRegularFile struct {
-	fileName string
-	isDir    bool
-}
-
-func resolvesTo(filePath string) (nonRegularFile, error) {
-	fileData := nonRegularFile{}
-	info, err := os.Lstat(filePath)
-	if err != nil {
-		return fileData, fmt.Errorf("failed to lstat file: %w", err)
-	}
-
-	if info.IsDir() {
-		fileData.fileName = filePath
-		fileData.isDir = true
-		return fileData, nil
-	}
-
-	if info.Mode()&fs.ModeSymlink != 0 {
-		fileName, err := os.Readlink(filePath)
-		if err != nil {
-			return fileData, fmt.Errorf("failed to follow symlink: %w", err)
-		}
-		fileName = strings.ReplaceAll(filePath, info.Name(), fileName)
-		fileData.fileName = fileName
-		fileInfo, err := os.Lstat(fileName)
-		if err != nil {
-			return fileData, fmt.Errorf("failed to lstat file: %w", err)
-		}
-		if fileInfo.IsDir() {
-			fileData.isDir = true
-			return fileData, nil
-		}
-	}
-	return fileData, nil
-}
-
 // sumFiles starts goroutines to walk the directory tree at root and digest each
 // regular file.  These goroutines send the results of the digests on the result
 // channel and send the result of the walk on the error channel.  If done is
 // closed, sumFiles abandons its work.
 func sumFiles(done <-chan struct{}, root string) (<-chan result, <-chan error) {
-	// For each regular file, start a goroutine that sums the file and sends
-	// the result on c.  Send the result of the walk on errc.
 	c := make(chan result)
 	errc := make(chan error, 1)
-	go func() { // HL
+	go func() {
 		var wg sync.WaitGroup
-		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return fmt.Errorf("error walking the file path %s: %w", root, err)
-			}
-			if !info.Mode().IsRegular() {
-				resolvedInfo, err := resolvesTo(root)
-				if err != nil {
-					return err
-				}
-				if resolvedInfo.isDir {
-					// TODO: figure out how to handle dirs and
-					// symlinked dirs
-					return nil
-				}
-				path = resolvedInfo.fileName
-			}
+
+		hashFile := func(keyPath, readPath string) {
 			wg.Add(1)
-			go func() { // HL
-				data, err := os.ReadFile(path)
+			go func() {
+				data, err := os.ReadFile(readPath)
 				select {
-				case c <- result{path, sha256.Sum256(data), err}: // HL
-				case <-done: // HL
+				case c <- result{keyPath, sha256.Sum256(data), err}:
+				case <-done:
 				}
 				wg.Done()
 			}()
-			// Abort the walk if done is closed.
-			select {
-			case <-done: // HL
-				return errors.New("walk canceled")
-			default:
+		}
+
+		// filepath.Walk does not descend into directory symlinks, so when
+		// one is encountered its resolved target is enqueued as its own
+		// walk job. The "logical" path (as seen through the symlink) is
+		// used for hash keys; the "physical" path (after resolution) is
+		// used for cycle detection.
+		type job struct{ logical, physical string }
+		visited := map[string]struct{}{filepath.Clean(root): {}}
+		queue := []job{{logical: root, physical: root}}
+
+		var walkErr error
+		for len(queue) > 0 && walkErr == nil {
+			j := queue[0]
+			queue = queue[1:]
+
+			walkErr = filepath.Walk(j.physical, func(path string, info os.FileInfo, err error) error {
+				if err != nil {
+					return err
+				}
+				select {
+				case <-done:
+					return errors.New("walk canceled")
+				default:
+				}
+
+				rel, err := filepath.Rel(j.physical, path)
+				if err != nil {
+					return err
+				}
+				logical := filepath.Join(j.logical, rel)
+
+				// For symlinks, follow once with Stat so symlink-to-file
+				// is treated like a regular file. Broken symlinks error
+				// here, propagating out and failing the hash.
+				target := info
+				if info.Mode()&fs.ModeSymlink != 0 {
+					target, err = os.Stat(path)
+					if err != nil {
+						return err
+					}
+				}
+
+				switch {
+				case info.Mode()&fs.ModeSymlink != 0 && target.IsDir():
+					resolved, err := filepath.EvalSymlinks(path)
+					if err != nil {
+						return err
+					}
+					if _, seen := visited[resolved]; seen {
+						log.Printf("sumFiles: skipping symlink cycle at %s -> %s", logical, resolved)
+						return nil
+					}
+					visited[resolved] = struct{}{}
+					queue = append(queue, job{logical: logical, physical: resolved})
+				case target.Mode().IsRegular():
+					hashFile(logical, path)
+				}
 				return nil
-			}
-		})
-		// Walk has returned, so all calls to wg.Add are done.  Start a
-		// goroutine to close c once all the sends are done.
-		go func() { // HL
+			})
+		}
+
+		go func() {
 			wg.Wait()
-			close(c) // HL
+			close(c)
 		}()
-		// No select needed here, since errc is buffered.
-		errc <- err // HL
+		errc <- walkErr
 	}()
 	return c, errc
 }
