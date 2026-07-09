@@ -6,6 +6,7 @@ metadata:
   name: baz-web
   annotations:
     appTag: latest
+    newAnnotation: test
 spec:
   replicas: 1
   selector:

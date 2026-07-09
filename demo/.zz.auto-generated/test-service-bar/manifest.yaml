@@ -6,6 +6,7 @@ metadata:
   name: bar-web
   annotations:
     appTag: latest
+    newAnnotation: test
 spec:
   replicas: 2
   selector:
@@ -32,6 +33,7 @@ metadata:
   name: bar-worker
   annotations:
     appTag: latest
+    newAnnotation: test
 spec:
   replicas: 1
   selector:

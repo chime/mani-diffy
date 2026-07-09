@@ -6,6 +6,7 @@ metadata:
   name: {{ printf "%s-%s" $rootValues.appName $processName }}
   annotations:
     appTag: {{ default "latest" $rootValues.appTag }}
+    newAnnotation: test
 spec:
   replicas: {{ default 1 $process.replicas }}
   selector:
