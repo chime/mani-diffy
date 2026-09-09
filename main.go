@@ -161,7 +161,22 @@ func (w *Walker) walk(inputPath, outputPath string, depth, maxDepth int, visited
 				return err
 			}
 
-			if hashGenerated != hash || emptyManifest {
+			needsRender := hashGenerated != hash || emptyManifest
+
+			// It is possible for the hashes to match, but the path
+			// no longer exists due to an interleaving merge that
+			// inadvertently removed it. In this case, we need to
+			// re-render.
+			if !needsRender {
+				if _, err := os.Stat(path); err != nil {
+					if !os.IsNotExist(err) {
+						return err
+					}
+					needsRender = true
+				}
+			}
+
+			if needsRender {
 				log.Printf("No match detected. Render: %s\n", crd.ObjectMeta.Name)
 				if err := w.Render(crd, path); err != nil {
 					if errors.Is(err, kustomize.ErrNotSupported) {
