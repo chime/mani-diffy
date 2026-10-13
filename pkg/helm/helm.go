@@ -17,7 +17,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
 	"github.com/chime/mani-diffy/pkg/kustomize"
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 )

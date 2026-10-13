@@ -13,7 +13,7 @@ import (
 
 	"github.com/chime/mani-diffy/pkg/helm"
 
-	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
 )
 
 func HelmTemplate(application *v1alpha1.Application, output string) error {

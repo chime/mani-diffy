@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
 )
 
 func mapKeys(m map[string][32]byte) []string {
@@ -311,7 +311,7 @@ kind: Application
 		crd := data[0]
 
 		hash, err := generateHashOnCrd(crd)
-		if err != nil || hash != "7bfd65e963e76680dc5160b6a55c04c3d9780c84aee1413ae710e4b5279cfe14" {
+		if err != nil || hash != "1629f322e698200b4265750f8effd83b5d88f531946e403a6e32050eb1917327" {
 			t.Errorf("Failed to generate correctly, got %s", hash)
 		}
 	})
@@ -415,13 +415,13 @@ kind: Application
 				name:            "Generating hash for an Application",
 				file:            "crdData_testfile_3.yaml",
 				ignoreValueFile: "",
-				hash:            "7ce0306f218c7147b388dbb1ec2fa78389e44ebd11ca31b208e085b82158d787",
+				hash:            "0013d3488f848c50424be9b6926b4c797f41876904b73aedccd410aacded9ed2",
 			},
 			{
 				name:            "Generate hash for an application with ignoreMissingValueFiles and a missing value file",
 				file:            "crdData_testfile_4.yaml",
 				ignoreValueFile: "",
-				hash:            "349f7da89b1c47362663daedb6fcc28980d017613a9cb9da7d53bb852467fa6c",
+				hash:            "eecc939adbc25a5f42ae0055d806edbf887c12ee439619e4a25dcea9f531df27",
 			},
 		}
 
