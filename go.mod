@@ -1,6 +1,6 @@
 module github.com/chime/mani-diffy
 
-go 1.20
+go 1.27.0
 
 require (
 	github.com/argoproj/argo-cd/v2 v2.6.15
