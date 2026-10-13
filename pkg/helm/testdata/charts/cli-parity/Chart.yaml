@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cli-parity
+version: 0.1.0
+dependencies:
+  - name: sub
+    version: 0.1.0

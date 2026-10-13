@@ -3,8 +3,10 @@ package helm
 import (
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -271,6 +273,103 @@ kind: Application
 		}
 	})
 
+	t.Run("TemplateMatchesHelmCLI", func(t *testing.T) {
+		// Golden files were rendered by the helm v3.17.1 CLI.
+		scenarios := []struct {
+			application string
+			golden      string
+		}{
+			{application: "crdData_cli_parity.yaml", golden: "cli_parity.golden.yaml"},
+			{application: "crdData_cli_parity_no_namespace.yaml", golden: "cli_parity_no_namespace.golden.yaml"},
+		}
+
+		for _, tt := range scenarios {
+			t.Run(tt.application, func(t *testing.T) {
+				apps, err := Read(tt.application)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want, err := os.ReadFile(tt.golden)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				got, err := template(apps[0], "appTag", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if string(got) != string(want) {
+					t.Errorf("rendered manifest differs from helm CLI output.\ngot:\n%s\nwant:\n%s", got, want)
+				}
+			})
+		}
+	})
+
+	t.Run("CapabilitiesMatchModuleVersions", func(t *testing.T) {
+		moduleVersion := func(module string) string {
+			out, err := exec.Command("go", "list", "-m", "-f", "{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}", module).Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			return strings.TrimSpace(string(out))
+		}
+
+		if got := moduleVersion("helm.sh/helm/v3"); got != helmVersion {
+			t.Errorf("helmVersion is %s but go.mod uses helm %s", helmVersion, got)
+		}
+		wantClientGo := fmt.Sprintf("v0.%s.", kubeVersionMinor)
+		if got := moduleVersion("k8s.io/client-go"); !strings.HasPrefix(got, wantClientGo) || kubeVersionMajor != "1" {
+			t.Errorf("kube version is %s.%s but go.mod uses k8s.io/client-go %s", kubeVersionMajor, kubeVersionMinor, got)
+		}
+	})
+
+	t.Run("TemplateConcurrently", func(t *testing.T) {
+		apps, err := Read("crdData_cli_parity.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := os.ReadFile("cli_parity.golden.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		const renders = 8
+		results := make(chan string, renders)
+		errs := make(chan error, renders)
+		for range renders {
+			go func() {
+				got, err := template(apps[0], "appTag", "")
+				errs <- err
+				results <- string(got)
+			}()
+		}
+
+		for range renders {
+			if err := <-errs; err != nil {
+				t.Fatal(err)
+			}
+			if got := <-results; got != string(want) {
+				t.Errorf("concurrent render differs from helm CLI output:\n%s", got)
+			}
+		}
+	})
+
+	t.Run("TemplateError", func(t *testing.T) {
+		apps, err := Read("crdData_cli_parity.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		app := apps[0]
+		app.Spec.Source.Helm.Parameters[0].Name = "replicas"
+		app.Spec.Source.Helm.Parameters[0].Value = "not-a-number"
+
+		_, err = template(app, "", "")
+		if err == nil || !strings.Contains(err.Error(), "replicas") {
+			t.Errorf("Expected a schema validation error about replicas, got: %v", err)
+		}
+	})
+
 	t.Run("GeneralHashFunction", func(t *testing.T) {
 		testFiles := []struct {
 			name string
@@ -447,45 +546,6 @@ kind: Application
 				want := tt.hash //nolint:govet
 				if got != want {
 					t.Errorf("Failed to generate a correct hash on an overrides. got: %s want %s", got, want)
-				}
-			})
-		}
-	})
-
-	t.Run("IsMissingDependencyErr", func(t *testing.T) {
-		templateErrors := []struct {
-			name       string
-			err        error
-			dependency bool
-		}{
-			{
-				name: "Missing charts",
-				err: errors.New(
-					"Error: found in Chart.yaml, but missing in charts/ directory: postgresql",
-				),
-				dependency: true,
-			},
-			{
-				name: "Missing requirements",
-				err: errors.New(
-					"Error: found in requirements.yaml, but missing in charts",
-				),
-				dependency: true,
-			},
-			{
-				name: "Chart error",
-				err: errors.New(
-					"no such file or directory",
-				),
-				dependency: false,
-			},
-		}
-
-		for _, tt := range templateErrors {
-			t.Run(tt.name, func(t *testing.T) {
-				got := IsMissingDependencyErr(tt.err)
-				if got != tt.dependency {
-					t.Errorf("%v got %t wanted %t", tt.name, got, tt.dependency)
 				}
 			})
 		}

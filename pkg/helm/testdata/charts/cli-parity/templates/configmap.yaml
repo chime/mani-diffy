@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cli-parity.name" . }}
+  namespace: {{ .Release.Namespace }}
+data:
+  kubeVersion: {{ .Capabilities.KubeVersion.Version }}
+  kubeMinor: {{ .Capabilities.KubeVersion.Minor | quote }}
+  helmVersion: {{ .Capabilities.HelmVersion.Version }}
+  hasDeployments: {{ .Capabilities.APIVersions.Has "apps/v1/Deployment" | quote }}
+  greeting: {{ .Values.greeting }}
+  env: {{ .Values.env }}
+  inline: {{ .Values.inline }}
+  appTag: {{ .Values.appTag }}
+  replicas: {{ .Values.replicas | quote }}
