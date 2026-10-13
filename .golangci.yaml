@@ -1,37 +1,43 @@
-# https://golangci-lint.run/usage/configuration/#config-file
+version: "2"
 run:
+  go: "1.27"
   allow-parallel-runners: true
-  timeout: 5m
-  go: '1.20'
-  skip-dirs-use-default: false
-
 linters:
   enable:
-    - errcheck
     - errorlint
-    - exportloopref
     - gocritic
-    - gofmt
-    - goimports
     - gosec
-    - govet
     - misspell
     - revive
-    - staticcheck
-    - tenv
     - unconvert
-    - unused
     - unparam
-
-issues:
-  # Excluding configuration per-path, per-linter, per-text and per-source
-  exclude-rules:
-    - text: "G306:"
-      linters:
-        - gosec
-    - text: "G204:"
-      linters:
-        - gosec
-    - text: "G112:"
-      linters:
-        - gosec
+  settings:
+    staticcheck:
+      # The staticcheck and gosimple checks run by golangci-lint v1.
+      checks:
+        - all
+        - -ST*
+        - -QF*
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - gosec
+        text: 'G306:'
+      - linters:
+          - gosec
+        text: 'G204:'
+      - linters:
+          - gosec
+        text: 'G112:'
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
