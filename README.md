@@ -68,3 +68,7 @@ You can see an example of that in the [`demo`](demo/README.md) directory.
 Q: Is ArgoCD using the rendered manifests in `.zz.auto-generated` ?
 
 A: No, ArgoCD renders the charts itself. There is no expected discrepancy between the manifest files rendered by mani-diffy and by ArgoCD as long as they are using the same version of Helm.
+
+Q: Which version of Helm does mani-diffy use?
+
+A: mani-diffy renders charts with the Helm library it is built with (`helm.sh/helm/v3` in [`go.mod`](go.mod)), not the `helm` binary on your `PATH`. Keep it in sync with the Helm version used by your ArgoCD.
