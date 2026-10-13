@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 )
 
 func mapKeys(m map[string][32]byte) []string {
@@ -214,6 +216,58 @@ kind: Application
 		if !strings.Contains(string(manifest), "appTag: CONSCIOUSLY_NOT_RENDERED") {
 			t.Errorf("Expected override not found in rendered manifest")
 
+		}
+	})
+
+	// needsDependency returns an Application for a copy of a chart whose
+	// dependency is declared but not vendored.
+	needsDependency := func(t *testing.T) *v1alpha1.Application {
+		chartsDir := t.TempDir()
+		if err := os.CopyFS(chartsDir, os.DirFS("charts")); err != nil {
+			t.Fatal(err)
+		}
+		apps, err := Read("crdData_testfile_3.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		app := apps[0]
+		app.Spec.Source.Path = chartsDir + "/needs-dependency"
+		app.Spec.Source.Helm.ValueFiles = nil
+		return app
+	}
+
+	t.Run("TemplateInstallsMissingDependencies", func(t *testing.T) {
+		manifest, err := template(needsDependency(t), "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if !strings.Contains(string(manifest), "name: release-name-dependency-source") {
+			t.Errorf("Expected the dependency to be rendered, got:\n%s", manifest)
+		}
+	})
+
+	t.Run("TemplateInstallsMissingDependenciesConcurrently", func(t *testing.T) {
+		app := needsDependency(t)
+
+		const renders = 8
+		results := make(chan string, renders)
+		errs := make(chan error, renders)
+		for range renders {
+			go func() {
+				manifest, err := template(app, "", "")
+				errs <- err
+				results <- string(manifest)
+			}()
+		}
+
+		for range renders {
+			if err := <-errs; err != nil {
+				t.Fatal(err)
+			}
+			if manifest := <-results; !strings.Contains(manifest, "name: release-name-dependency-source") {
+				t.Errorf("Expected the dependency to be rendered, got:\n%s", manifest)
+			}
 		}
 	})
 

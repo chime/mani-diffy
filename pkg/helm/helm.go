@@ -84,7 +84,23 @@ func IsMissingDependencyErr(err error) bool {
 		strings.Contains(err.Error(), "found in Chart.yaml, but missing in charts/ directory")
 }
 
+// dependencyUpdates guards installedDependencies so that applications sharing
+// a chart update its dependencies once, and never while another application
+// is updating them.
+var dependencyUpdates sync.Mutex
+
+// installedDependencies records the result of updating each chart's
+// dependencies.
+var installedDependencies = map[string]error{}
+
 func installDependencies(chartDirectory string) error {
+	dependencyUpdates.Lock()
+	defer dependencyUpdates.Unlock()
+
+	if err, ok := installedDependencies[chartDirectory]; ok {
+		return err
+	}
+
 	log.Println("Updating dependencies for " + chartDirectory)
 	cmd := exec.Command(
 		"helm",
@@ -94,11 +110,11 @@ func installDependencies(chartDirectory string) error {
 	cmd.Dir = chartDirectory
 	err := cmd.Run()
 	if err != nil {
-		return fmt.Errorf("error updating dependencies for %s: %w", chartDirectory, err)
+		err = fmt.Errorf("error updating dependencies for %s: %w", chartDirectory, err)
 	}
+	installedDependencies[chartDirectory] = err
 
-	return nil
-
+	return err
 }
 
 func template(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueFile string) ([]byte, error) {
@@ -118,8 +134,7 @@ func template(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueF
 		tmpFile = dataFile
 	}
 
-	cmd := exec.Command(
-		"helm",
+	args := []string{
 		"template",
 		chart,
 		"--set",
@@ -130,29 +145,37 @@ func template(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueF
 		tmpFile,
 		"-n",
 		helmInfo.Spec.Destination.Namespace,
-	)
-
-	if skipRenderKey != "" {
-		cmd.Args = append(cmd.Args, "--set", fmt.Sprintf("%s=%s", skipRenderKey, "CONSCIOUSLY_NOT_RENDERED"))
 	}
 
-	cmd.Dir = helmInfo.Spec.Source.Path
+	if skipRenderKey != "" {
+		args = append(args, "--set", fmt.Sprintf("%s=%s", skipRenderKey, "CONSCIOUSLY_NOT_RENDERED"))
+	}
+
+	manifest, stderr, err := runHelm(helmInfo.Spec.Source.Path, args)
+	if err != nil && IsMissingDependencyErr(errors.New(stderr)) {
+		if err := installDependencies(helmInfo.Spec.Source.Path); err != nil {
+			return []byte{}, err
+		}
+		manifest, stderr, err = runHelm(helmInfo.Spec.Source.Path, args)
+	}
+	if err != nil {
+		return []byte{}, fmt.Errorf("error templating manifest: %w %v", err, stderr)
+	}
+
+	return manifest, nil
+}
+
+// runHelm runs helm in dir and returns its stdout and stderr.
+func runHelm(dir string, args []string) ([]byte, string, error) {
+	cmd := exec.Command("helm", args...)
+	cmd.Dir = dir
 
 	var outb, errb bytes.Buffer
 	cmd.Stdout = &outb
 	cmd.Stderr = &errb
 
-	if err := cmd.Run(); err != nil {
-		if IsMissingDependencyErr(errors.New(errb.String())) {
-			if err := installDependencies(helmInfo.Spec.Source.Path); err != nil {
-				return template(helmInfo, skipRenderKey, ignoreValueFile)
-			}
-		} else {
-			return []byte{}, fmt.Errorf("error templating manifest: %w %v", err, errb.String())
-		}
-	}
-
-	return outb.Bytes(), nil
+	err := cmd.Run()
+	return outb.Bytes(), errb.String(), err
 }
 
 func writeToFile(manifest []byte, location string) error {
