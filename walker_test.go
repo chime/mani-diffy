@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -59,6 +58,11 @@ func newWorkspace(t *testing.T) (root, output string) {
 
 func walk(t *testing.T, root, output string, parallelism int) error {
 	t.Helper()
+	return walkWithPostRenderer(t, root, output, parallelism, "")
+}
+
+func walkWithPostRenderer(t *testing.T, root, output string, parallelism int, postRenderer string) error {
+	t.Helper()
 	if err := os.MkdirAll(output, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +70,11 @@ func walk(t *testing.T, root, output string, parallelism int) error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return newWalker("", "", "-ignore", parallelism).Walk(root, output, InfiniteDepth, hashes)
+	w := newWalker("", "", "-ignore", parallelism)
+	if postRenderer != "" {
+		w.PostRender = PostRender(postRenderer)
+	}
+	return w.Walk(root, output, InfiniteDepth, hashes)
 }
 
 func isRendered(output, name string) bool {
@@ -74,30 +82,19 @@ func isRendered(output, name string) bool {
 	return err == nil
 }
 
-// wrapHelm puts a helm executable first on PATH that runs script. The script
-// can run the real helm as "$REAL_HELM".
-func wrapHelm(t *testing.T, script string) {
+// postRenderer writes a post-renderer script and returns its path. The script
+// gets the rendered application's output directory as "$1" and can append to
+// a log at "$RENDER_LOG", whose path is returned too.
+func postRenderer(t *testing.T, script string) (path, log string) {
 	t.Helper()
-	realHelm, err := exec.LookPath("helm")
-	if err != nil {
-		t.Fatal(err)
-	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "helm"), []byte("#!/bin/sh\n"+script), 0755); err != nil {
+	path = filepath.Join(dir, "post-render")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("REAL_HELM", realHelm)
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
-// logHelm records every helm run in a log, one line per event, and returns
-// the log's path.
-func logHelm(t *testing.T, script string) string {
-	t.Helper()
-	log := filepath.Join(t.TempDir(), "helm.log")
-	t.Setenv("HELM_LOG", log)
-	wrapHelm(t, script)
-	return log
+	log = filepath.Join(dir, "render.log")
+	t.Setenv("RENDER_LOG", log)
+	return path, log
 }
 
 func readLines(t *testing.T, path string) []string {
@@ -116,14 +113,12 @@ func TestWalkRendersInParallelUpToLimit(t *testing.T) {
 		apps.WriteString(application(t, fmt.Sprintf("app-%d", i), "app", ""))
 	}
 	writeFile(t, filepath.Join(root, "apps.yaml"), apps.String())
-	log := logHelm(t, `echo start >> "$HELM_LOG"
+	script, log := postRenderer(t, `echo start >> "$RENDER_LOG"
 sleep 0.3
-"$REAL_HELM" "$@"; status=$?
-echo end >> "$HELM_LOG"
-exit $status
+echo end >> "$RENDER_LOG"
 `)
 
-	if err := walk(t, root, output, 2); err != nil {
+	if err := walkWithPostRenderer(t, root, output, 2, script); err != nil {
 		t.Fatal(err)
 	}
 
@@ -142,7 +137,7 @@ exit $status
 		}
 	}
 	if maxRunning != 2 {
-		t.Errorf("Expected at most 2 helm processes at once, got %d", maxRunning)
+		t.Errorf("Expected at most 2 renders at once, got %d", maxRunning)
 	}
 }
 
@@ -180,11 +175,10 @@ apps:
 `
 	writeFile(t, filepath.Join(root, "a.yaml"), application(t, "parent-a", "apps", shared))
 	writeFile(t, filepath.Join(root, "b.yaml"), application(t, "parent-b", "apps", shared))
-	log := logHelm(t, `basename "$(pwd -P)" >> "$HELM_LOG"
-exec "$REAL_HELM" "$@"
+	script, log := postRenderer(t, `basename "$1" >> "$RENDER_LOG"
 `)
 
-	if err := walk(t, root, output, 4); err != nil {
+	if err := walkWithPostRenderer(t, root, output, 4, script); err != nil {
 		t.Fatal(err)
 	}
 
@@ -192,8 +186,8 @@ exec "$REAL_HELM" "$@"
 		t.Error("Expected shared to be rendered")
 	}
 	renders := 0
-	for _, chart := range readLines(t, log) {
-		if chart == "app" {
+	for _, name := range readLines(t, log) {
+		if name == "shared" {
 			renders++
 		}
 	}
@@ -268,18 +262,18 @@ func TestWalkRendersApplicationWhoseOutputIsMissing(t *testing.T) {
 
 func TestWalkWaitsForRendersInProgressAfterError(t *testing.T) {
 	root, output := newWorkspace(t)
-	writeFile(t, filepath.Join(root, "apps.yaml"), application(t, "slow", "slow", "")+application(t, "bad", "broken", ""))
-	wrapHelm(t, `[ "$(basename "$(pwd -P)")" = slow ] && sleep 1
-exec "$REAL_HELM" "$@"
+	writeFile(t, filepath.Join(root, "apps.yaml"), application(t, "slow", "app", "")+application(t, "bad", "broken", ""))
+	script, _ := postRenderer(t, `[ "$(basename "$1")" = slow ] && sleep 1
+touch "$1/post-rendered"
 `)
 
-	err := walk(t, root, output, 2)
+	err := walkWithPostRenderer(t, root, output, 2, script)
 
 	if err == nil || !strings.Contains(err.Error(), "broken chart") {
 		t.Errorf("Expected render error for bad, got: %v", err)
 	}
-	if !isRendered(output, "slow") {
-		t.Error("Expected slow to be rendered")
+	if _, err := os.Stat(filepath.Join(output, "slow", "post-rendered")); err != nil {
+		t.Errorf("Expected slow to finish rendering: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(output, "bad")); !os.IsNotExist(err) {
 		t.Errorf("Expected bad not to be rendered, got: %v", err)
