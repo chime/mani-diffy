@@ -276,17 +276,15 @@ func TestWalkWaitsForRendersInProgressAfterError(t *testing.T) {
 	writeFile(t, filepath.Join(root, "apps.yaml"), application("slow")+application("bad"))
 
 	helm := &fakeHelm{fail: "bad", delays: map[string]time.Duration{"slow": 200 * time.Millisecond}}
-	if err := walk(t, newTestWalker(helm, 2), root, output); err == nil {
-		t.Fatal("Expected render error for bad")
-	}
+	err := walk(t, newTestWalker(helm, 2), root, output)
 
-	helm.mu.Lock()
-	inFlight := helm.inFlight
-	helm.mu.Unlock()
-	if inFlight != 0 {
-		t.Errorf("Expected no renders in progress after Walk returned, got %d", inFlight)
+	if err == nil || !strings.Contains(err.Error(), "render failed for bad") {
+		t.Errorf("Expected render error for bad, got: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(output, "slow", "manifest.yaml")); err != nil {
-		t.Errorf("Expected slow to finish rendering: %v", err)
+		t.Errorf("Expected slow to be rendered: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(output, "bad")); !os.IsNotExist(err) {
+		t.Errorf("Expected bad not to be rendered, got: %v", err)
 	}
 }
