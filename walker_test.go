@@ -1,19 +1,21 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
-	"time"
-
-	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 )
 
-func application(name string) string {
+// application returns an Argo application that renders one of the charts in
+// testdata/walker/charts with the given values.
+func application(name, chart, values string) string {
+	if values == "" {
+		values = "{}"
+	}
+	indented := "        " + strings.ReplaceAll(strings.TrimSpace(values), "\n", "\n        ")
 	return fmt.Sprintf(`---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -24,8 +26,10 @@ spec:
     namespace: default
   source:
     path: charts/%s
-    helm: {}
-`, name, name)
+    helm:
+      values: |
+%s
+`, name, chart, indented)
 }
 
 func writeFile(t *testing.T, path, content string) {
@@ -38,67 +42,19 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-// fakeHelm renders each Application into the manifest listed in children,
-// keyed by Application name, and records how renders overlap.
-type fakeHelm struct {
-	children map[string]string
-	delay    time.Duration
-	delays   map[string]time.Duration
-	fail     string
-
-	mu            sync.Mutex
-	rendered      []string
-	inFlight      int
-	maxConcurrent int
+// newWorkspace changes into a temporary copy of testdata/walker and returns
+// the bootstrap and output directories to walk.
+func newWorkspace(t *testing.T) (root, output string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS("testdata/walker")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	return "bootstrap", "output"
 }
 
-func (f *fakeHelm) Render(app *v1alpha1.Application, output string) error {
-	f.mu.Lock()
-	f.rendered = append(f.rendered, app.Name)
-	f.inFlight++
-	if f.inFlight > f.maxConcurrent {
-		f.maxConcurrent = f.inFlight
-	}
-	f.mu.Unlock()
-
-	defer func() {
-		f.mu.Lock()
-		f.inFlight--
-		f.mu.Unlock()
-	}()
-
-	if delay, ok := f.delays[app.Name]; ok {
-		time.Sleep(delay)
-	} else {
-		time.Sleep(f.delay)
-	}
-
-	if app.Name == f.fail {
-		return errors.New("render failed for " + app.Name)
-	}
-
-	if err := os.MkdirAll(output, 0755); err != nil {
-		return err
-	}
-	manifest := f.children[app.Name]
-	if manifest == "" {
-		manifest = "kind: ConfigMap\n"
-	}
-	return os.WriteFile(filepath.Join(output, "manifest.yaml"), []byte(manifest), 0644)
-}
-
-func newTestWalker(helm *fakeHelm, parallelism int) *Walker {
-	return &Walker{
-		HelmTemplate: helm.Render,
-		GenerateHash: func(app *v1alpha1.Application) (string, error) {
-			return "hash-" + app.Name, nil
-		},
-		Parallelism:  parallelism,
-		ignoreSuffix: "-ignore",
-	}
-}
-
-func walk(t *testing.T, w *Walker, root, output string) error {
+func walk(t *testing.T, root, output string, parallelism int) error {
 	t.Helper()
 	if err := os.MkdirAll(output, 0755); err != nil {
 		t.Fatal(err)
@@ -107,124 +63,165 @@ func walk(t *testing.T, w *Walker, root, output string) error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return w.Walk(root, output, InfiniteDepth, hashes)
+	return newWalker("", "", "-ignore", parallelism).Walk(root, output, InfiniteDepth, hashes)
+}
+
+func isRendered(output, name string) bool {
+	_, err := os.Stat(filepath.Join(output, name, "manifest.yaml"))
+	return err == nil
+}
+
+// wrapHelm puts a helm executable first on PATH that runs script. The script
+// can run the real helm as "$REAL_HELM".
+func wrapHelm(t *testing.T, script string) {
+	t.Helper()
+	realHelm, err := exec.LookPath("helm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "helm"), []byte("#!/bin/sh\n"+script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REAL_HELM", realHelm)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// logHelm records every helm run in a log, one line per event, and returns
+// the log's path.
+func logHelm(t *testing.T, script string) string {
+	t.Helper()
+	log := filepath.Join(t.TempDir(), "helm.log")
+	t.Setenv("HELM_LOG", log)
+	wrapHelm(t, script)
+	return log
+}
+
+func readLines(t *testing.T, path string) []string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Fields(string(content))
 }
 
 func TestWalkRendersInParallelUpToLimit(t *testing.T) {
-	dir := t.TempDir()
-	root := filepath.Join(dir, "bootstrap")
-	output := filepath.Join(dir, "output")
+	root, output := newWorkspace(t)
 	var apps strings.Builder
 	for i := range 6 {
-		apps.WriteString(application(fmt.Sprintf("app-%d", i)))
+		apps.WriteString(application(fmt.Sprintf("app-%d", i), "app", ""))
 	}
 	writeFile(t, filepath.Join(root, "apps.yaml"), apps.String())
+	log := logHelm(t, `echo start >> "$HELM_LOG"
+sleep 0.3
+"$REAL_HELM" "$@"; status=$?
+echo end >> "$HELM_LOG"
+exit $status
+`)
 
-	helm := &fakeHelm{delay: 50 * time.Millisecond}
-	if err := walk(t, newTestWalker(helm, 2), root, output); err != nil {
+	if err := walk(t, root, output, 2); err != nil {
 		t.Fatal(err)
 	}
 
-	if len(helm.rendered) != 6 {
-		t.Errorf("Expected 6 renders, got %d: %v", len(helm.rendered), helm.rendered)
+	for i := range 6 {
+		if name := fmt.Sprintf("app-%d", i); !isRendered(output, name) {
+			t.Errorf("Expected %s to be rendered", name)
+		}
 	}
-	if helm.maxConcurrent != 2 {
-		t.Errorf("Expected 2 concurrent renders, got %d", helm.maxConcurrent)
+	running, maxRunning := 0, 0
+	for _, event := range readLines(t, log) {
+		if event == "start" {
+			running++
+			maxRunning = max(maxRunning, running)
+		} else {
+			running--
+		}
+	}
+	if maxRunning != 2 {
+		t.Errorf("Expected at most 2 helm processes at once, got %d", maxRunning)
 	}
 }
 
 func TestWalkRendersChildApplications(t *testing.T) {
-	dir := t.TempDir()
-	root := filepath.Join(dir, "bootstrap")
-	output := filepath.Join(dir, "output")
-	writeFile(t, filepath.Join(root, "root.yaml"), application("parent"))
+	root, output := newWorkspace(t)
+	writeFile(t, filepath.Join(root, "root.yaml"), application("parent", "apps", `
+apps:
+- name: child-a
+  chart: apps
+  values:
+    apps:
+    - name: grandchild
+      chart: app
+- name: child-b
+  chart: app
+`))
 
-	helm := &fakeHelm{children: map[string]string{
-		"parent":  application("child-a") + application("child-b"),
-		"child-a": application("grandchild"),
-	}}
-	if err := walk(t, newTestWalker(helm, 4), root, output); err != nil {
+	if err := walk(t, root, output, 4); err != nil {
 		t.Fatal(err)
 	}
 
 	for _, name := range []string{"parent", "child-a", "child-b", "grandchild"} {
-		if _, err := os.Stat(filepath.Join(output, name, "manifest.yaml")); err != nil {
-			t.Errorf("Expected %s to be rendered: %v", name, err)
+		if !isRendered(output, name) {
+			t.Errorf("Expected %s to be rendered", name)
 		}
-	}
-	if len(helm.rendered) != 4 {
-		t.Errorf("Expected 4 renders, got %v", helm.rendered)
 	}
 }
 
 func TestWalkRendersDuplicateApplicationOnce(t *testing.T) {
-	dir := t.TempDir()
-	root := filepath.Join(dir, "bootstrap")
-	output := filepath.Join(dir, "output")
-	writeFile(t, filepath.Join(root, "a.yaml"), application("parent-a"))
-	writeFile(t, filepath.Join(root, "b.yaml"), application("parent-b"))
+	root, output := newWorkspace(t)
+	shared := `
+apps:
+- name: shared
+  chart: app
+`
+	writeFile(t, filepath.Join(root, "a.yaml"), application("parent-a", "apps", shared))
+	writeFile(t, filepath.Join(root, "b.yaml"), application("parent-b", "apps", shared))
+	log := logHelm(t, `basename "$(pwd -P)" >> "$HELM_LOG"
+exec "$REAL_HELM" "$@"
+`)
 
-	helm := &fakeHelm{children: map[string]string{
-		"parent-a": application("shared"),
-		"parent-b": application("shared"),
-	}}
-	if err := walk(t, newTestWalker(helm, 4), root, output); err != nil {
+	if err := walk(t, root, output, 4); err != nil {
 		t.Fatal(err)
 	}
 
+	if !isRendered(output, "shared") {
+		t.Error("Expected shared to be rendered")
+	}
 	renders := 0
-	for _, name := range helm.rendered {
-		if name == "shared" {
+	for _, chart := range readLines(t, log) {
+		if chart == "app" {
 			renders++
 		}
 	}
 	if renders != 1 {
-		t.Errorf("Expected shared to be rendered once, got %d renders: %v", renders, helm.rendered)
-	}
-}
-
-func TestWalkReturnsRenderError(t *testing.T) {
-	dir := t.TempDir()
-	root := filepath.Join(dir, "bootstrap")
-	output := filepath.Join(dir, "output")
-	writeFile(t, filepath.Join(root, "apps.yaml"), application("good")+application("bad"))
-
-	helm := &fakeHelm{fail: "bad"}
-	err := walk(t, newTestWalker(helm, 2), root, output)
-
-	if err == nil || !strings.Contains(err.Error(), "render failed for bad") {
-		t.Errorf("Expected render error for bad, got: %v", err)
+		t.Errorf("Expected shared to be rendered once, got %d renders", renders)
 	}
 }
 
 func TestWalkPrunesUnvisitedApplications(t *testing.T) {
-	dir := t.TempDir()
-	root := filepath.Join(dir, "bootstrap")
-	output := filepath.Join(dir, "output")
-	writeFile(t, filepath.Join(root, "apps.yaml"), application("current"))
+	root, output := newWorkspace(t)
+	writeFile(t, filepath.Join(root, "apps.yaml"), application("current", "app", ""))
 	writeFile(t, filepath.Join(output, "stale", "manifest.yaml"), "kind: ConfigMap\n")
 
-	if err := walk(t, newTestWalker(&fakeHelm{}, 2), root, output); err != nil {
+	if err := walk(t, root, output, 2); err != nil {
 		t.Fatal(err)
 	}
 
 	if _, err := os.Stat(filepath.Join(output, "stale")); !os.IsNotExist(err) {
 		t.Errorf("Expected stale output to be pruned, got: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(output, "current", "manifest.yaml")); err != nil {
-		t.Errorf("Expected current to be rendered: %v", err)
+	if !isRendered(output, "current") {
+		t.Error("Expected current to be rendered")
 	}
 }
 
 func TestWalkRejectsConflictingDuplicateApplications(t *testing.T) {
-	dir := t.TempDir()
-	root := filepath.Join(dir, "bootstrap")
-	output := filepath.Join(dir, "output")
-	conflicting := strings.Replace(application("shared"), "path: charts/shared", "path: charts/other", 1)
-	writeFile(t, filepath.Join(root, "a.yaml"), application("shared"))
-	writeFile(t, filepath.Join(root, "b.yaml"), conflicting)
+	root, output := newWorkspace(t)
+	writeFile(t, filepath.Join(root, "a.yaml"), application("shared", "app", ""))
+	writeFile(t, filepath.Join(root, "b.yaml"), application("shared", "app", "name: other"))
 
-	err := walk(t, newTestWalker(&fakeHelm{}, 2), root, output)
+	err := walk(t, root, output, 2)
 
 	if err == nil || !strings.Contains(err.Error(), "application shared is defined more than once with different specs") {
 		t.Errorf("Expected conflicting duplicate error, got: %v", err)
@@ -232,57 +229,54 @@ func TestWalkRejectsConflictingDuplicateApplications(t *testing.T) {
 }
 
 func TestWalkStopsRenderingAfterError(t *testing.T) {
-	dir := t.TempDir()
-	root := filepath.Join(dir, "bootstrap")
-	output := filepath.Join(dir, "output")
-	writeFile(t, filepath.Join(root, "apps.yaml"), application("bad")+application("after"))
+	root, output := newWorkspace(t)
+	writeFile(t, filepath.Join(root, "apps.yaml"), application("bad", "broken", "")+application("after", "app", ""))
 
-	helm := &fakeHelm{fail: "bad"}
-	if err := walk(t, newTestWalker(helm, 1), root, output); err == nil {
-		t.Fatal("Expected render error for bad")
+	err := walk(t, root, output, 1)
+
+	if err == nil || !strings.Contains(err.Error(), "broken chart") {
+		t.Errorf("Expected render error for bad, got: %v", err)
 	}
-
-	if len(helm.rendered) != 1 || helm.rendered[0] != "bad" {
-		t.Errorf("Expected only bad to be rendered, got %v", helm.rendered)
+	for _, name := range []string{"bad", "after"} {
+		if _, err := os.Stat(filepath.Join(output, name)); !os.IsNotExist(err) {
+			t.Errorf("Expected %s not to be rendered, got: %v", name, err)
+		}
 	}
 }
 
 func TestWalkRendersApplicationWhoseOutputIsMissing(t *testing.T) {
-	dir := t.TempDir()
-	root := filepath.Join(dir, "bootstrap")
-	output := filepath.Join(dir, "output")
-	writeFile(t, filepath.Join(root, "apps.yaml"), application("app"))
-	if err := walk(t, newTestWalker(&fakeHelm{}, 2), root, output); err != nil {
+	root, output := newWorkspace(t)
+	writeFile(t, filepath.Join(root, "apps.yaml"), application("app", "app", ""))
+	if err := walk(t, root, output, 2); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.RemoveAll(filepath.Join(output, "app")); err != nil {
 		t.Fatal(err)
 	}
 
-	helm := &fakeHelm{}
-	if err := walk(t, newTestWalker(helm, 2), root, output); err != nil {
+	if err := walk(t, root, output, 2); err != nil {
 		t.Fatal(err)
 	}
 
-	if len(helm.rendered) != 1 || helm.rendered[0] != "app" {
-		t.Errorf("Expected app to be rendered again, got %v", helm.rendered)
+	if !isRendered(output, "app") {
+		t.Error("Expected app to be rendered again")
 	}
 }
 
 func TestWalkWaitsForRendersInProgressAfterError(t *testing.T) {
-	dir := t.TempDir()
-	root := filepath.Join(dir, "bootstrap")
-	output := filepath.Join(dir, "output")
-	writeFile(t, filepath.Join(root, "apps.yaml"), application("slow")+application("bad"))
+	root, output := newWorkspace(t)
+	writeFile(t, filepath.Join(root, "apps.yaml"), application("slow", "slow", "")+application("bad", "broken", ""))
+	wrapHelm(t, `[ "$(basename "$(pwd -P)")" = slow ] && sleep 1
+exec "$REAL_HELM" "$@"
+`)
 
-	helm := &fakeHelm{fail: "bad", delays: map[string]time.Duration{"slow": 200 * time.Millisecond}}
-	err := walk(t, newTestWalker(helm, 2), root, output)
+	err := walk(t, root, output, 2)
 
-	if err == nil || !strings.Contains(err.Error(), "render failed for bad") {
+	if err == nil || !strings.Contains(err.Error(), "broken chart") {
 		t.Errorf("Expected render error for bad, got: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(output, "slow", "manifest.yaml")); err != nil {
-		t.Errorf("Expected slow to be rendered: %v", err)
+	if !isRendered(output, "slow") {
+		t.Error("Expected slow to be rendered")
 	}
 	if _, err := os.Stat(filepath.Join(output, "bad")); !os.IsNotExist(err) {
 		t.Errorf("Expected bad not to be rendered, got: %v", err)

@@ -33,6 +33,22 @@ func PostRender(command string) PostRenderer {
 	}
 }
 
+// newWalker returns a Walker that renders Argo applications with Helm, or by
+// copying their source when they don't use Helm.
+func newWalker(skipRenderKey, ignoreValueFile, ignoreSuffix string, parallelism int) *Walker {
+	return &Walker{
+		CopySource: CopySource,
+		HelmTemplate: func(application *v1alpha1.Application, output string) error {
+			return helm.Run(application, output, skipRenderKey, ignoreValueFile)
+		},
+		GenerateHash: func(application *v1alpha1.Application) (string, error) {
+			return helm.GenerateHash(application, ignoreValueFile)
+		},
+		Parallelism:  parallelism,
+		ignoreSuffix: ignoreSuffix,
+	}
+}
+
 func main() {
 	root := flag.String("root", "bootstrap", "Directory to initially look for k8s manifests containing Argo applications. The root of the tree.")
 	workdir := flag.String("workdir", ".", "Directory to run the command in.")
@@ -63,17 +79,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	w := &Walker{
-		CopySource: CopySource,
-		HelmTemplate: func(application *v1alpha1.Application, output string) error {
-			return helm.Run(application, output, *skipRenderKey, *ignoreValueFile)
-		},
-		GenerateHash: func(application *v1alpha1.Application) (string, error) {
-			return helm.GenerateHash(application, *ignoreValueFile)
-		},
-		Parallelism:  *parallelism,
-		ignoreSuffix: *ignoreSuffix,
-	}
+	w := newWalker(*skipRenderKey, *ignoreValueFile, *ignoreSuffix, *parallelism)
 
 	if *postRenderer != "" {
 		w.PostRender = PostRender(*postRenderer)
