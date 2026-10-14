@@ -1,0 +1,15 @@
+{{- range .Values.apps }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ .name }}
+spec:
+  destination:
+    namespace: default
+  source:
+    path: charts/{{ .chart }}
+    helm:
+      values: |
+{{ toYaml (.values | default dict) | indent 8 }}
+{{- end }}

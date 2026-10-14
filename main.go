@@ -1,238 +1,20 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
+	"runtime"
 
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/chime/mani-diffy/pkg/helm"
-	"github.com/chime/mani-diffy/pkg/kustomize"
 
 	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 )
-
-const InfiniteDepth = -1
-
-const skipAnnotation = "mani-diffy.chime.com/skip"
-
-// shouldSkipRender checks if an Application should be skipped based on:
-// 1. The application name suffix (ignoreSuffix)
-// 2. The mani-diffy.chime.com/skip annotation set to "true"
-func shouldSkipRender(app *v1alpha1.Application, ignoreSuffix string) bool {
-	// Check if the application name has the ignore suffix
-	if strings.HasSuffix(app.ObjectMeta.Name, ignoreSuffix) {
-		return true
-	}
-
-	// Check if the skip annotation is set to "true"
-	if app.ObjectMeta.Annotations != nil {
-		if value, ok := app.ObjectMeta.Annotations[skipAnnotation]; ok && value == "true" {
-			return true
-		}
-	}
-
-	return false
-}
-
-// Renderer is a function that can render an Argo application.
-type Renderer func(*v1alpha1.Application, string) error
-
-// PostRenderer is a function that can be called after an Argo application is rendered.
-type PostRenderer func(string) error
-
-// Walker walks a directory tree looking for Argo applications and renders them
-// using a depth first search.
-type Walker struct {
-	// HelmTemplate is a function that can render an Argo application using Helm
-	HelmTemplate Renderer
-
-	// CopySource is a function that can copy an Argo application to a directory
-	CopySource Renderer
-
-	// PostRender is a function that can be called after an Argo application is rendered.
-	PostRender PostRenderer
-
-	// GenerateHash is used to generate a cache key for an Argo application
-	GenerateHash func(*v1alpha1.Application) (string, error)
-
-	ignoreSuffix string
-}
-
-// Walk walks a directory tree looking for Argo applications and renders them
-func (w *Walker) Walk(inputPath, outputPath string, maxDepth int, hashes HashStore) error {
-	visited := make(map[string]bool)
-
-	if err := w.walk(inputPath, outputPath, 0, maxDepth, visited, hashes); err != nil {
-		return err
-	}
-
-	if err := hashes.Save(); err != nil {
-		return err
-	}
-
-	if maxDepth == InfiniteDepth {
-		return pruneUnvisited(visited, outputPath)
-	}
-
-	return nil
-}
-
-func pruneUnvisited(visited map[string]bool, outputPath string) error {
-	files, err := os.ReadDir(outputPath)
-	if err != nil {
-		return err
-	}
-
-	for _, f := range files {
-		if !f.IsDir() {
-			continue
-		}
-
-		path := filepath.Join(outputPath, f.Name())
-		if visited[path] {
-			continue
-		}
-		if err := os.RemoveAll(path); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (w *Walker) walk(inputPath, outputPath string, depth, maxDepth int, visited map[string]bool, hashes HashStore) error {
-	if maxDepth != InfiniteDepth {
-		// If we've reached the max depth, stop walking
-		if depth > maxDepth {
-			return nil
-		}
-	}
-
-	log.Println("Dropping into", inputPath)
-
-	fi, err := os.ReadDir(inputPath)
-	if err != nil {
-		return err
-	}
-	for _, file := range fi {
-		if !strings.Contains(file.Name(), ".yaml") {
-			continue
-		}
-
-		crds, err := helm.Read(filepath.Join(inputPath, file.Name()))
-		if err != nil {
-			return err
-		}
-		for _, crd := range crds {
-			if crd.Kind != "Application" {
-				continue
-			}
-
-			if shouldSkipRender(crd, w.ignoreSuffix) {
-				continue
-			}
-
-			path := filepath.Join(outputPath, crd.ObjectMeta.Name)
-			visited[path] = true
-
-			hash, err := hashes.Get(crd.ObjectMeta.Name)
-			// COMPARE HASHES HERE. STEP INTO RENDER IF NO MATCH
-			if err != nil {
-				return err
-			}
-
-			hashGenerated, err := w.GenerateHash(crd)
-			if err != nil {
-				if errors.Is(err, kustomize.ErrNotSupported) {
-					continue
-				}
-				return err
-			}
-
-			emptyManifest, err := helm.EmptyManifest(filepath.Join(path, "manifest.yaml"))
-			if err != nil {
-				return err
-			}
-
-			needsRender := hashGenerated != hash || emptyManifest
-
-			// It is possible for the hashes to match, but the path
-			// no longer exists due to an interleaving merge that
-			// inadvertently removed it. In this case, we need to
-			// re-render.
-			if !needsRender {
-				if _, err := os.Stat(path); err != nil {
-					if !os.IsNotExist(err) {
-						return err
-					}
-					needsRender = true
-				}
-			}
-
-			if needsRender {
-				log.Printf("No match detected. Render: %s\n", crd.ObjectMeta.Name)
-				if err := w.Render(crd, path); err != nil {
-					if errors.Is(err, kustomize.ErrNotSupported) {
-						continue
-					}
-					return err
-				}
-
-				if err := hashes.Add(crd.ObjectMeta.Name, hashGenerated); err != nil {
-					return err
-				}
-			}
-
-			if err := w.walk(path, outputPath, depth+1, maxDepth, visited, hashes); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (w *Walker) Render(application *v1alpha1.Application, output string) error {
-	log.Println("Render", application.ObjectMeta.Name)
-
-	var render Renderer
-
-	// Figure out which renderer to use
-	switch {
-	case application.Spec.Source.Helm != nil:
-		render = w.HelmTemplate
-	case application.Spec.Source.Kustomize != nil:
-		log.Println("WARNING: kustomize not supported")
-		return kustomize.ErrNotSupported
-	default:
-		render = w.CopySource
-	}
-
-	// Make sure the directory is empty before rendering.
-	if err := os.RemoveAll(output); err != nil {
-		return err
-	}
-
-	// Render
-	if err := render(application, output); err != nil {
-		return err
-	}
-
-	// Call the post renderer to do any post processing
-	if w.PostRender != nil {
-		if err := w.PostRender(output); err != nil {
-			return fmt.Errorf("post render failed: %w", err)
-		}
-	}
-
-	return nil
-}
 
 func HelmTemplate(application *v1alpha1.Application, output string) error {
 	return helm.Run(application, output, "", "")
@@ -251,6 +33,22 @@ func PostRender(command string) PostRenderer {
 	}
 }
 
+// newWalker returns a Walker that renders Argo applications with Helm, or by
+// copying their source when they don't use Helm.
+func newWalker(skipRenderKey, ignoreValueFile, ignoreSuffix string, parallelism int) *Walker {
+	return &Walker{
+		CopySource: CopySource,
+		HelmTemplate: func(application *v1alpha1.Application, output string) error {
+			return helm.Run(application, output, skipRenderKey, ignoreValueFile)
+		},
+		GenerateHash: func(application *v1alpha1.Application) (string, error) {
+			return helm.GenerateHash(application, ignoreValueFile)
+		},
+		Parallelism:  parallelism,
+		ignoreSuffix: ignoreSuffix,
+	}
+}
+
 func main() {
 	root := flag.String("root", "bootstrap", "Directory to initially look for k8s manifests containing Argo applications. The root of the tree.")
 	workdir := flag.String("workdir", ".", "Directory to run the command in.")
@@ -262,6 +60,7 @@ func main() {
 	skipRenderKey := flag.String("skip-render-key", "do-not-render", "Key to not render")
 	ignoreValueFile := flag.String("ignore-value-file", "overrides-to-ignore", "Override file to ignore based on filename")
 	postRenderer := flag.String("post-renderer", "", "When provided, binary will be called after an application is rendered.")
+	parallelism := flag.Int("parallelism", runtime.NumCPU(), "Maximum number of applications rendered at once.")
 	flag.Parse()
 
 	// Runs the command in the specified directory
@@ -280,16 +79,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	w := &Walker{
-		CopySource: CopySource,
-		HelmTemplate: func(application *v1alpha1.Application, output string) error {
-			return helm.Run(application, output, *skipRenderKey, *ignoreValueFile)
-		},
-		GenerateHash: func(application *v1alpha1.Application) (string, error) {
-			return helm.GenerateHash(application, *ignoreValueFile)
-		},
-		ignoreSuffix: *ignoreSuffix,
-	}
+	w := newWalker(*skipRenderKey, *ignoreValueFile, *ignoreSuffix, *parallelism)
 
 	if *postRenderer != "" {
 		w.PostRender = PostRender(*postRenderer)
