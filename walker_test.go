@@ -1,35 +1,38 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // application returns an Argo application that renders one of the charts in
 // testdata/walker/charts with the given values.
-func application(name, chart, values string) string {
-	if values == "" {
-		values = "{}"
+func application(t *testing.T, name, chart, values string) string {
+	t.Helper()
+	app := v1alpha1.Application{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "argoproj.io/v1alpha1", Kind: "Application"},
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: v1alpha1.ApplicationSpec{
+			Destination: v1alpha1.ApplicationDestination{Namespace: "default"},
+			Source: &v1alpha1.ApplicationSource{
+				Path: "charts/" + chart,
+				Helm: &v1alpha1.ApplicationSourceHelm{Values: values},
+			},
+		},
 	}
-	indented := "        " + strings.ReplaceAll(strings.TrimSpace(values), "\n", "\n        ")
-	return fmt.Sprintf(`---
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: %s
-spec:
-  destination:
-    namespace: default
-  source:
-    path: charts/%s
-    helm:
-      values: |
-%s
-`, name, chart, indented)
+	content, err := json.Marshal(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(content) + "\n"
 }
 
 func writeFile(t *testing.T, path, content string) {
@@ -110,7 +113,7 @@ func TestWalkRendersInParallelUpToLimit(t *testing.T) {
 	root, output := newWorkspace(t)
 	var apps strings.Builder
 	for i := range 6 {
-		apps.WriteString(application(fmt.Sprintf("app-%d", i), "app", ""))
+		apps.WriteString(application(t, fmt.Sprintf("app-%d", i), "app", ""))
 	}
 	writeFile(t, filepath.Join(root, "apps.yaml"), apps.String())
 	log := logHelm(t, `echo start >> "$HELM_LOG"
@@ -145,7 +148,7 @@ exit $status
 
 func TestWalkRendersChildApplications(t *testing.T) {
 	root, output := newWorkspace(t)
-	writeFile(t, filepath.Join(root, "root.yaml"), application("parent", "apps", `
+	writeFile(t, filepath.Join(root, "root.yaml"), application(t, "parent", "apps", `
 apps:
 - name: child-a
   chart: apps
@@ -175,8 +178,8 @@ apps:
 - name: shared
   chart: app
 `
-	writeFile(t, filepath.Join(root, "a.yaml"), application("parent-a", "apps", shared))
-	writeFile(t, filepath.Join(root, "b.yaml"), application("parent-b", "apps", shared))
+	writeFile(t, filepath.Join(root, "a.yaml"), application(t, "parent-a", "apps", shared))
+	writeFile(t, filepath.Join(root, "b.yaml"), application(t, "parent-b", "apps", shared))
 	log := logHelm(t, `basename "$(pwd -P)" >> "$HELM_LOG"
 exec "$REAL_HELM" "$@"
 `)
@@ -201,7 +204,7 @@ exec "$REAL_HELM" "$@"
 
 func TestWalkPrunesUnvisitedApplications(t *testing.T) {
 	root, output := newWorkspace(t)
-	writeFile(t, filepath.Join(root, "apps.yaml"), application("current", "app", ""))
+	writeFile(t, filepath.Join(root, "apps.yaml"), application(t, "current", "app", ""))
 	writeFile(t, filepath.Join(output, "stale", "manifest.yaml"), "kind: ConfigMap\n")
 
 	if err := walk(t, root, output, 2); err != nil {
@@ -218,8 +221,8 @@ func TestWalkPrunesUnvisitedApplications(t *testing.T) {
 
 func TestWalkRejectsConflictingDuplicateApplications(t *testing.T) {
 	root, output := newWorkspace(t)
-	writeFile(t, filepath.Join(root, "a.yaml"), application("shared", "app", ""))
-	writeFile(t, filepath.Join(root, "b.yaml"), application("shared", "app", "name: other"))
+	writeFile(t, filepath.Join(root, "a.yaml"), application(t, "shared", "app", ""))
+	writeFile(t, filepath.Join(root, "b.yaml"), application(t, "shared", "app", "name: other"))
 
 	err := walk(t, root, output, 2)
 
@@ -230,7 +233,7 @@ func TestWalkRejectsConflictingDuplicateApplications(t *testing.T) {
 
 func TestWalkStopsRenderingAfterError(t *testing.T) {
 	root, output := newWorkspace(t)
-	writeFile(t, filepath.Join(root, "apps.yaml"), application("bad", "broken", "")+application("after", "app", ""))
+	writeFile(t, filepath.Join(root, "apps.yaml"), application(t, "bad", "broken", "")+application(t, "after", "app", ""))
 
 	err := walk(t, root, output, 1)
 
@@ -246,7 +249,7 @@ func TestWalkStopsRenderingAfterError(t *testing.T) {
 
 func TestWalkRendersApplicationWhoseOutputIsMissing(t *testing.T) {
 	root, output := newWorkspace(t)
-	writeFile(t, filepath.Join(root, "apps.yaml"), application("app", "app", ""))
+	writeFile(t, filepath.Join(root, "apps.yaml"), application(t, "app", "app", ""))
 	if err := walk(t, root, output, 2); err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +268,7 @@ func TestWalkRendersApplicationWhoseOutputIsMissing(t *testing.T) {
 
 func TestWalkWaitsForRendersInProgressAfterError(t *testing.T) {
 	root, output := newWorkspace(t)
-	writeFile(t, filepath.Join(root, "apps.yaml"), application("slow", "slow", "")+application("bad", "broken", ""))
+	writeFile(t, filepath.Join(root, "apps.yaml"), application(t, "slow", "slow", "")+application(t, "bad", "broken", ""))
 	wrapHelm(t, `[ "$(basename "$(pwd -P)")" = slow ] && sleep 1
 exec "$REAL_HELM" "$@"
 `)
