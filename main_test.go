@@ -43,6 +43,7 @@ func writeFile(t *testing.T, path, content string) {
 type fakeHelm struct {
 	children map[string]string
 	delay    time.Duration
+	delays   map[string]time.Duration
 	fail     string
 
 	mu            sync.Mutex
@@ -66,7 +67,11 @@ func (f *fakeHelm) Render(app *v1alpha1.Application, output string) error {
 		f.mu.Unlock()
 	}()
 
-	time.Sleep(f.delay)
+	if delay, ok := f.delays[app.Name]; ok {
+		time.Sleep(delay)
+	} else {
+		time.Sleep(f.delay)
+	}
 
 	if app.Name == f.fail {
 		return errors.New("render failed for " + app.Name)
@@ -261,5 +266,27 @@ func TestWalkRendersApplicationWhoseOutputIsMissing(t *testing.T) {
 
 	if len(helm.rendered) != 1 || helm.rendered[0] != "app" {
 		t.Errorf("Expected app to be rendered again, got %v", helm.rendered)
+	}
+}
+
+func TestWalkWaitsForRendersInProgressAfterError(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "bootstrap")
+	output := filepath.Join(dir, "output")
+	writeFile(t, filepath.Join(root, "apps.yaml"), application("slow")+application("bad"))
+
+	helm := &fakeHelm{fail: "bad", delays: map[string]time.Duration{"slow": 200 * time.Millisecond}}
+	if err := walk(t, newTestWalker(helm, 2), root, output); err == nil {
+		t.Fatal("Expected render error for bad")
+	}
+
+	helm.mu.Lock()
+	inFlight := helm.inFlight
+	helm.mu.Unlock()
+	if inFlight != 0 {
+		t.Errorf("Expected no renders in progress after Walk returned, got %d", inFlight)
+	}
+	if _, err := os.Stat(filepath.Join(output, "slow", "manifest.yaml")); err != nil {
+		t.Errorf("Expected slow to finish rendering: %v", err)
 	}
 }
