@@ -11,6 +11,7 @@ import (
 
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chime/mani-diffy/pkg/helm"
@@ -139,13 +140,15 @@ func (w *Walker) walk(inputPath, outputPath string, maxDepth int, visited map[st
 
 	jobs := make(chan job)
 	results := make(chan result)
+	var workers sync.WaitGroup
+	defer workers.Wait()
 	defer close(jobs)
 	for range max(w.Parallelism, 1) {
-		go func() {
+		workers.Go(func() {
 			for j := range jobs {
 				results <- w.process(j, outputPath, maxDepth)
 			}
-		}()
+		})
 	}
 
 	var pending []job
