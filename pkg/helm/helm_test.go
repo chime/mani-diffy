@@ -3,17 +3,17 @@ package helm
 import (
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	"helm.sh/helm/v3/pkg/chartutil"
 )
 
 func mapKeys(m map[string][32]byte) []string {
@@ -306,21 +306,30 @@ kind: Application
 		}
 	})
 
-	t.Run("CapabilitiesMatchModuleVersions", func(t *testing.T) {
-		moduleVersion := func(module string) string {
-			out, err := exec.Command("go", "list", "-m", "-f", "{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}", module).Output()
-			if err != nil {
-				t.Fatal(err)
-			}
-			return strings.TrimSpace(string(out))
-		}
+	t.Run("CLIVersions", func(t *testing.T) {
+		info := &debug.BuildInfo{Deps: []*debug.Module{
+			{Path: "helm.sh/helm/v3", Version: "v3.17.1"},
+			{Path: "k8s.io/client-go", Version: "v0.31.0", Replace: &debug.Module{Path: "k8s.io/client-go", Version: "v0.32.2"}},
+		}}
 
-		if got := moduleVersion("helm.sh/helm/v3"); got != helmVersion {
-			t.Errorf("helmVersion is %s but go.mod uses helm %s", helmVersion, got)
+		helm, kube, err := cliVersions(info)
+
+		if err != nil {
+			t.Fatal(err)
 		}
-		wantClientGo := fmt.Sprintf("v0.%s.", kubeVersionMinor)
-		if got := moduleVersion("k8s.io/client-go"); !strings.HasPrefix(got, wantClientGo) || kubeVersionMajor != "1" {
-			t.Errorf("kube version is %s.%s but go.mod uses k8s.io/client-go %s", kubeVersionMajor, kubeVersionMinor, got)
+		if helm != "v3.17.1" {
+			t.Errorf("Expected helm version v3.17.1, got %s", helm)
+		}
+		if want := (chartutil.KubeVersion{Version: "v1.32.0", Major: "1", Minor: "32"}); kube != want {
+			t.Errorf("Expected kube version %+v, got %+v", want, kube)
+		}
+	})
+
+	t.Run("CLIVersionsWithoutHelm", func(t *testing.T) {
+		_, _, err := cliVersions(&debug.BuildInfo{Deps: []*debug.Module{{Path: "k8s.io/client-go", Version: "v0.32.2"}}})
+
+		if err == nil || !strings.Contains(err.Error(), "helm.sh/helm/v3") {
+			t.Errorf("Expected an error about the missing helm module, got: %v", err)
 		}
 	})
 

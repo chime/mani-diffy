@@ -12,7 +12,9 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -30,23 +32,54 @@ import (
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 )
 
-// The helm CLI release build stamps its own version and the Kubernetes
-// version of its k8s.io/client-go dependency into the template capabilities.
-// These must match the helm.sh/helm/v3 and k8s.io/client-go versions in go.mod
-// so that rendered manifests match the helm CLI.
-const (
-	helmVersion      = "v3.17.1"
-	kubeVersionMajor = "1"
-	kubeVersionMinor = "32"
-)
-
-func init() {
-	chartutil.DefaultCapabilities.HelmVersion.Version = helmVersion
-	chartutil.DefaultCapabilities.KubeVersion = chartutil.KubeVersion{
-		Version: fmt.Sprintf("v%s.%s.0", kubeVersionMajor, kubeVersionMinor),
-		Major:   kubeVersionMajor,
-		Minor:   kubeVersionMinor,
+// cliKubeVersion makes templates see the same capabilities as when rendered by
+// the helm CLI release build of the linked helm.sh/helm/v3, and returns the
+// Kubernetes version to render with.
+var cliKubeVersion = sync.OnceValues(func() (chartutil.KubeVersion, error) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return chartutil.KubeVersion{}, errors.New("build info is not available")
 	}
+	helmVersion, kubeVersion, err := cliVersions(info)
+	if err != nil {
+		return chartutil.KubeVersion{}, err
+	}
+	chartutil.DefaultCapabilities.HelmVersion.Version = helmVersion
+	return kubeVersion, nil
+})
+
+// cliVersions returns the versions that the helm CLI release build stamps into
+// template capabilities: helm's own version, and the Kubernetes version
+// matching its k8s.io/client-go dependency (client-go v0.32.x is Kubernetes
+// 1.32).
+func cliVersions(info *debug.BuildInfo) (string, chartutil.KubeVersion, error) {
+	modules := map[string]string{}
+	for _, dep := range info.Deps {
+		modules[dep.Path] = dep.Version
+		if dep.Replace != nil {
+			modules[dep.Path] = dep.Replace.Version
+		}
+	}
+
+	helmVersion, ok := modules["helm.sh/helm/v3"]
+	if !ok {
+		return "", chartutil.KubeVersion{}, errors.New("build info does not list helm.sh/helm/v3")
+	}
+	clientGoVersion, ok := modules["k8s.io/client-go"]
+	if !ok {
+		return "", chartutil.KubeVersion{}, errors.New("build info does not list k8s.io/client-go")
+	}
+
+	var major, minor int
+	if _, err := fmt.Sscanf(clientGoVersion, "v%d.%d.", &major, &minor); err != nil {
+		return "", chartutil.KubeVersion{}, fmt.Errorf("unexpected k8s.io/client-go version %s: %w", clientGoVersion, err)
+	}
+	kubeMajor, kubeMinor := strconv.Itoa(major+1), strconv.Itoa(minor)
+	return helmVersion, chartutil.KubeVersion{
+		Version: fmt.Sprintf("v%s.%s.0", kubeMajor, kubeMinor),
+		Major:   kubeMajor,
+		Minor:   kubeMinor,
+	}, nil
 }
 
 var settings = cli.New()
@@ -229,6 +262,11 @@ func template(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueF
 		namespace = "default"
 	}
 
+	kubeVersion, err := cliKubeVersion()
+	if err != nil {
+		return nil, fmt.Errorf("error templating manifest: %w", err)
+	}
+
 	client := action.NewInstall(&action.Configuration{Log: func(string, ...interface{}) {}})
 	client.DryRun = true
 	client.DryRunOption = "true"
@@ -236,6 +274,7 @@ func template(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueF
 	client.Replace = true
 	client.ClientOnly = true
 	client.Namespace = namespace
+	client.KubeVersion = &kubeVersion
 
 	rel, err := client.Run(c, vals)
 	if err != nil {
