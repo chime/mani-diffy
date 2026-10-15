@@ -1,0 +1,47 @@
+---
+# Source: cli-parity/templates/namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: default
+---
+# Source: cli-parity/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-cli-parity
+  namespace: default
+data:
+  kubeVersion: v1.32.0
+  kubeMinor: "32"
+  helmVersion: v3.17.1
+  hasDeployments: "false"
+  greeting: hello
+  env: prod
+  inline: 
+  appTag: CONSCIOUSLY_NOT_RENDERED
+  replicas: "3"
+---
+# Source: cli-parity/charts/sub/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-sub
+spec:
+  ports:
+    - port: 80
+---
+# Source: cli-parity/templates/hook.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-cli-parity-migrate
+  annotations:
+    helm.sh/hook: pre-install
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: busybox

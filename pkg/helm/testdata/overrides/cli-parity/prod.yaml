@@ -1,0 +1,2 @@
+env: prod
+replicas: 3

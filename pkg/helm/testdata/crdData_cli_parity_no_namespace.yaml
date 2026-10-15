@@ -1,0 +1,14 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cli-parity-no-namespace
+spec:
+  destination:
+    server: https://kubernetes.default.svc
+  project: default
+  source:
+    repoURL: https://github.com/my-org/my-repo.git
+    path: charts/cli-parity
+    helm:
+      valueFiles:
+        - ../../overrides/cli-parity/prod.yaml
