@@ -6,10 +6,14 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	"helm.sh/helm/v3/pkg/chartutil"
 )
 
 func mapKeys(m map[string][32]byte) []string {
@@ -217,6 +221,164 @@ kind: Application
 		}
 	})
 
+	// needsDependency returns an Application for a copy of a chart whose
+	// dependency is declared but not vendored.
+	needsDependency := func(t *testing.T) *v1alpha1.Application {
+		chartsDir := t.TempDir()
+		if err := os.CopyFS(chartsDir, os.DirFS("charts")); err != nil {
+			t.Fatal(err)
+		}
+		apps, err := Read("crdData_testfile_3.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		app := apps[0]
+		app.Spec.Source.Path = chartsDir + "/needs-dependency"
+		app.Spec.Source.Helm.ValueFiles = nil
+		return app
+	}
+
+	t.Run("TemplateInstallsMissingDependencies", func(t *testing.T) {
+		manifest, err := template(needsDependency(t), "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if !strings.Contains(string(manifest), "name: release-name-dependency-source") {
+			t.Errorf("Expected the dependency to be rendered, got:\n%s", manifest)
+		}
+	})
+
+	t.Run("TemplateInstallsMissingDependenciesConcurrently", func(t *testing.T) {
+		app := needsDependency(t)
+
+		const renders = 8
+		results := make(chan string, renders)
+		errs := make(chan error, renders)
+		for range renders {
+			go func() {
+				manifest, err := template(app, "", "")
+				errs <- err
+				results <- string(manifest)
+			}()
+		}
+
+		for range renders {
+			if err := <-errs; err != nil {
+				t.Fatal(err)
+			}
+			if manifest := <-results; !strings.Contains(manifest, "name: release-name-dependency-source") {
+				t.Errorf("Expected the dependency to be rendered, got:\n%s", manifest)
+			}
+		}
+	})
+
+	t.Run("TemplateMatchesHelmCLI", func(t *testing.T) {
+		// Golden files were rendered by the helm v3.17.1 CLI.
+		scenarios := []struct {
+			application string
+			golden      string
+		}{
+			{application: "crdData_cli_parity.yaml", golden: "cli_parity.golden.yaml"},
+			{application: "crdData_cli_parity_no_namespace.yaml", golden: "cli_parity_no_namespace.golden.yaml"},
+		}
+
+		for _, tt := range scenarios {
+			t.Run(tt.application, func(t *testing.T) {
+				apps, err := Read(tt.application)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want, err := os.ReadFile(tt.golden)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				got, err := template(apps[0], "appTag", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if string(got) != string(want) {
+					t.Errorf("rendered manifest differs from helm CLI output.\ngot:\n%s\nwant:\n%s", got, want)
+				}
+			})
+		}
+	})
+
+	t.Run("CLIVersions", func(t *testing.T) {
+		info := &debug.BuildInfo{Deps: []*debug.Module{
+			{Path: "helm.sh/helm/v3", Version: "v3.17.1"},
+			{Path: "k8s.io/client-go", Version: "v0.31.0", Replace: &debug.Module{Path: "k8s.io/client-go", Version: "v0.32.2"}},
+		}}
+
+		helm, kube, err := cliVersions(info)
+
+		if err != nil {
+			t.Fatal(err)
+		}
+		if helm != "v3.17.1" {
+			t.Errorf("Expected helm version v3.17.1, got %s", helm)
+		}
+		if want := (chartutil.KubeVersion{Version: "v1.32.0", Major: "1", Minor: "32"}); kube != want {
+			t.Errorf("Expected kube version %+v, got %+v", want, kube)
+		}
+	})
+
+	t.Run("CLIVersionsWithoutHelm", func(t *testing.T) {
+		_, _, err := cliVersions(&debug.BuildInfo{Deps: []*debug.Module{{Path: "k8s.io/client-go", Version: "v0.32.2"}}})
+
+		if err == nil || !strings.Contains(err.Error(), "helm.sh/helm/v3") {
+			t.Errorf("Expected an error about the missing helm module, got: %v", err)
+		}
+	})
+
+	t.Run("TemplateConcurrently", func(t *testing.T) {
+		apps, err := Read("crdData_cli_parity.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := os.ReadFile("cli_parity.golden.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		const renders = 8
+		results := make(chan string, renders)
+		errs := make(chan error, renders)
+		for range renders {
+			go func() {
+				got, err := template(apps[0], "appTag", "")
+				errs <- err
+				results <- string(got)
+			}()
+		}
+
+		for range renders {
+			if err := <-errs; err != nil {
+				t.Fatal(err)
+			}
+			if got := <-results; got != string(want) {
+				t.Errorf("concurrent render differs from helm CLI output:\n%s", got)
+			}
+		}
+	})
+
+	t.Run("TemplateError", func(t *testing.T) {
+		apps, err := Read("crdData_cli_parity.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		app := apps[0]
+		app.Spec.Source.Helm.Parameters[0].Name = "replicas"
+		app.Spec.Source.Helm.Parameters[0].Value = "not-a-number"
+
+		_, err = template(app, "", "")
+		if err == nil || !strings.Contains(err.Error(), "replicas") {
+			t.Errorf("Expected a schema validation error about replicas, got: %v", err)
+		}
+	})
+
 	t.Run("GeneralHashFunction", func(t *testing.T) {
 		testFiles := []struct {
 			name string
@@ -257,7 +419,7 @@ kind: Application
 		crd := data[0]
 
 		hash, err := generateHashOnCrd(crd)
-		if err != nil || hash != "7bfd65e963e76680dc5160b6a55c04c3d9780c84aee1413ae710e4b5279cfe14" {
+		if err != nil || hash != "1629f322e698200b4265750f8effd83b5d88f531946e403a6e32050eb1917327" {
 			t.Errorf("Failed to generate correctly, got %s", hash)
 		}
 	})
@@ -361,13 +523,13 @@ kind: Application
 				name:            "Generating hash for an Application",
 				file:            "crdData_testfile_3.yaml",
 				ignoreValueFile: "",
-				hash:            "7ce0306f218c7147b388dbb1ec2fa78389e44ebd11ca31b208e085b82158d787",
+				hash:            "0013d3488f848c50424be9b6926b4c797f41876904b73aedccd410aacded9ed2",
 			},
 			{
 				name:            "Generate hash for an application with ignoreMissingValueFiles and a missing value file",
 				file:            "crdData_testfile_4.yaml",
 				ignoreValueFile: "",
-				hash:            "349f7da89b1c47362663daedb6fcc28980d017613a9cb9da7d53bb852467fa6c",
+				hash:            "eecc939adbc25a5f42ae0055d806edbf887c12ee439619e4a25dcea9f531df27",
 			},
 		}
 
@@ -393,45 +555,6 @@ kind: Application
 				want := tt.hash //nolint:govet
 				if got != want {
 					t.Errorf("Failed to generate a correct hash on an overrides. got: %s want %s", got, want)
-				}
-			})
-		}
-	})
-
-	t.Run("IsMissingDependencyErr", func(t *testing.T) {
-		templateErrors := []struct {
-			name       string
-			err        error
-			dependency bool
-		}{
-			{
-				name: "Missing charts",
-				err: errors.New(
-					"Error: found in Chart.yaml, but missing in charts/ directory: postgresql",
-				),
-				dependency: true,
-			},
-			{
-				name: "Missing requirements",
-				err: errors.New(
-					"Error: found in requirements.yaml, but missing in charts",
-				),
-				dependency: true,
-			},
-			{
-				name: "Chart error",
-				err: errors.New(
-					"no such file or directory",
-				),
-				dependency: false,
-			},
-		}
-
-		for _, tt := range templateErrors {
-			t.Run(tt.name, func(t *testing.T) {
-				got := IsMissingDependencyErr(tt.err)
-				if got != tt.dependency {
-					t.Errorf("%v got %t wanted %t", tt.name, got, tt.dependency)
 				}
 			})
 		}

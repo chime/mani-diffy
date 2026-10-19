@@ -10,17 +10,83 @@ import (
 	"io/fs"
 	"log"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
-	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
 	"github.com/chime/mani-diffy/pkg/kustomize"
+	"helm.sh/helm/v3/pkg/action"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chart/loader"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/cli"
+	"helm.sh/helm/v3/pkg/cli/values"
+	"helm.sh/helm/v3/pkg/downloader"
+	"helm.sh/helm/v3/pkg/getter"
+	"helm.sh/helm/v3/pkg/registry"
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 )
+
+// cliKubeVersion makes templates see the same capabilities as when rendered by
+// the helm CLI release build of the linked helm.sh/helm/v3, and returns the
+// Kubernetes version to render with.
+var cliKubeVersion = sync.OnceValues(func() (chartutil.KubeVersion, error) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return chartutil.KubeVersion{}, errors.New("build info is not available")
+	}
+	helmVersion, kubeVersion, err := cliVersions(info)
+	if err != nil {
+		return chartutil.KubeVersion{}, err
+	}
+	chartutil.DefaultCapabilities.HelmVersion.Version = helmVersion
+	return kubeVersion, nil
+})
+
+// cliVersions returns the versions that the helm CLI release build stamps into
+// template capabilities: helm's own version, and the Kubernetes version
+// matching its k8s.io/client-go dependency (client-go v0.32.x is Kubernetes
+// 1.32).
+func cliVersions(info *debug.BuildInfo) (string, chartutil.KubeVersion, error) {
+	modules := map[string]string{}
+	for _, dep := range info.Deps {
+		modules[dep.Path] = dep.Version
+		if dep.Replace != nil {
+			modules[dep.Path] = dep.Replace.Version
+		}
+	}
+
+	helmVersion, ok := modules["helm.sh/helm/v3"]
+	if !ok {
+		return "", chartutil.KubeVersion{}, errors.New("build info does not list helm.sh/helm/v3")
+	}
+	clientGoVersion, ok := modules["k8s.io/client-go"]
+	if !ok {
+		return "", chartutil.KubeVersion{}, errors.New("build info does not list k8s.io/client-go")
+	}
+
+	var major, minor int
+	if _, err := fmt.Sscanf(clientGoVersion, "v%d.%d.", &major, &minor); err != nil {
+		return "", chartutil.KubeVersion{}, fmt.Errorf("unexpected k8s.io/client-go version %s: %w", clientGoVersion, err)
+	}
+	kubeMajor, kubeMinor := strconv.Itoa(major+1), strconv.Itoa(minor)
+	return helmVersion, chartutil.KubeVersion{
+		Version: fmt.Sprintf("v%s.%s.0", kubeMajor, kubeMinor),
+		Major:   kubeMajor,
+		Minor:   kubeMinor,
+	}, nil
+}
+
+var settings = cli.New()
+
+// dependencyUpdates serializes dependency updates so that applications sharing
+// a chart do not download its dependencies concurrently.
+var dependencyUpdates sync.Mutex
 
 func VerifyRenderDir(autoGenerationPath string) error {
 	if _, err := os.Stat(autoGenerationPath); errors.Is(err, os.ErrNotExist) {
@@ -41,9 +107,7 @@ func CreateDir(dirName string) error {
 
 func buildParams(payload *v1alpha1.Application, ignoreValueFile string) (string, string) {
 	helmParameters := payload.Spec.Source.Helm.Parameters
-	helmFiles := payload.Spec.Source.Helm.ValueFiles
 	setValues := ""
-	fileValues := ""
 
 	for i := 0; i < len(helmParameters); i++ {
 		setValues += fmt.Sprintf("%s=%s", helmParameters[i].Name, helmParameters[i].Value)
@@ -52,14 +116,20 @@ func buildParams(payload *v1alpha1.Application, ignoreValueFile string) (string,
 		}
 
 	}
-	for i := 0; i < len(helmFiles); i++ {
-		if !ignoredValueFile(payload, helmFiles[i], ignoreValueFile) {
-			fileValues += fmt.Sprintf("%s,", helmFiles[i])
+
+	return setValues, strings.Join(valueFiles(payload, ignoreValueFile), ",")
+}
+
+// valueFiles returns the Application's value files that should be rendered,
+// relative to the chart path.
+func valueFiles(payload *v1alpha1.Application, ignoreValueFile string) []string {
+	var files []string
+	for _, f := range payload.Spec.Source.Helm.ValueFiles {
+		if !ignoredValueFile(payload, f, ignoreValueFile) {
+			files = append(files, f)
 		}
 	}
-	fileValues = strings.TrimRight(fileValues, ",")
-
-	return setValues, fileValues
+	return files
 }
 
 func createTempFile(payload string) (string, error) {
@@ -79,80 +149,145 @@ func createTempFile(payload string) (string, error) {
 	return tmpYamlFile.Name(), nil
 }
 
-func IsMissingDependencyErr(err error) bool {
-	return strings.Contains(err.Error(), "found in requirements.yaml, but missing in charts") ||
-		strings.Contains(err.Error(), "found in Chart.yaml, but missing in charts/ directory")
+// loadChart loads a chart, installing its dependencies first if they are missing.
+func loadChart(chartPath string) (*chart.Chart, error) {
+	c, err := loader.Load(chartPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkIfInstallable(c); err != nil {
+		return nil, err
+	}
+	if !missingDependencies(c) {
+		return c, nil
+	}
+
+	dependencyUpdates.Lock()
+	defer dependencyUpdates.Unlock()
+
+	// Another application using this chart may have installed them already.
+	if c, err = loader.Load(chartPath); err != nil {
+		return nil, err
+	}
+	if !missingDependencies(c) {
+		return c, nil
+	}
+	if err := installDependencies(chartPath); err != nil {
+		return nil, err
+	}
+	return loader.Load(chartPath)
+}
+
+func checkIfInstallable(c *chart.Chart) error {
+	switch c.Metadata.Type {
+	case "", "application":
+		return nil
+	}
+	return fmt.Errorf("%s charts are not installable", c.Metadata.Type)
+}
+
+func missingDependencies(c *chart.Chart) bool {
+	return c.Metadata.Dependencies != nil && action.CheckDependencies(c, c.Metadata.Dependencies) != nil
 }
 
 func installDependencies(chartDirectory string) error {
 	log.Println("Updating dependencies for " + chartDirectory)
-	cmd := exec.Command(
-		"helm",
-		"dependency",
-		"update",
+	registryClient, err := registry.NewClient(
+		registry.ClientOptEnableCache(true),
+		registry.ClientOptWriter(io.Discard),
+		registry.ClientOptCredentialsFile(settings.RegistryConfig),
 	)
-	cmd.Dir = chartDirectory
-	err := cmd.Run()
 	if err != nil {
+		return fmt.Errorf("error creating registry client: %w", err)
+	}
+
+	manager := &downloader.Manager{
+		Out:              io.Discard,
+		ChartPath:        chartDirectory,
+		Getters:          getter.All(settings),
+		RegistryClient:   registryClient,
+		RepositoryConfig: settings.RepositoryConfig,
+		RepositoryCache:  settings.RepositoryCache,
+	}
+	if err := manager.Update(); err != nil {
 		return fmt.Errorf("error updating dependencies for %s: %w", chartDirectory, err)
 	}
 
 	return nil
-
 }
 
+// template renders an Application's chart the same way as
+// `helm template <chart> -n <namespace> -f <value files> --set <parameters>`
+// run from the chart directory.
 func template(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueFile string) ([]byte, error) {
+	sourcePath := helmInfo.Spec.Source.Path
+	chartPath := strings.Split(sourcePath, "/")
+	chartDir := filepath.Join(sourcePath, "..", chartPath[len(chartPath)-1])
 
-	chartPath := strings.Split(helmInfo.Spec.Source.Path, "/")
-	chart := fmt.Sprint("../" + chartPath[len(chartPath)-1])
+	setValues, _ := buildParams(helmInfo, ignoreValueFile)
+	valueOpts := &values.Options{Values: []string{setValues}}
 
-	setValues, fileValues := buildParams(helmInfo, ignoreValueFile)
+	for _, f := range valueFiles(helmInfo, ignoreValueFile) {
+		if !filepath.IsAbs(f) {
+			f = filepath.Join(sourcePath, f)
+		}
+		valueOpts.ValueFiles = append(valueOpts.ValueFiles, f)
+	}
 
-	tmpFile := ""
 	if helmInfo.Spec.Source.Helm.Values != "" {
 		dataFile, err := createTempFile(helmInfo.Spec.Source.Helm.Values)
 		defer os.Remove(dataFile)
 		if err != nil {
 			log.Println(err)
 		}
-		tmpFile = dataFile
+		valueOpts.ValueFiles = append(valueOpts.ValueFiles, dataFile)
 	}
-
-	cmd := exec.Command(
-		"helm",
-		"template",
-		chart,
-		"--set",
-		setValues,
-		"-f",
-		fileValues,
-		"-f",
-		tmpFile,
-		"-n",
-		helmInfo.Spec.Destination.Namespace,
-	)
 
 	if skipRenderKey != "" {
-		cmd.Args = append(cmd.Args, "--set", fmt.Sprintf("%s=%s", skipRenderKey, "CONSCIOUSLY_NOT_RENDERED"))
+		valueOpts.Values = append(valueOpts.Values, fmt.Sprintf("%s=%s", skipRenderKey, "CONSCIOUSLY_NOT_RENDERED"))
 	}
 
-	cmd.Dir = helmInfo.Spec.Source.Path
-
-	var outb, errb bytes.Buffer
-	cmd.Stdout = &outb
-	cmd.Stderr = &errb
-
-	if err := cmd.Run(); err != nil {
-		if IsMissingDependencyErr(errors.New(errb.String())) {
-			if err := installDependencies(helmInfo.Spec.Source.Path); err != nil {
-				return template(helmInfo, skipRenderKey, ignoreValueFile)
-			}
-		} else {
-			return []byte{}, fmt.Errorf("error templating manifest: %w %v", err, errb.String())
-		}
+	vals, err := valueOpts.MergeValues(getter.All(settings))
+	if err != nil {
+		return nil, fmt.Errorf("error templating manifest: %w", err)
 	}
 
-	return outb.Bytes(), nil
+	c, err := loadChart(chartDir)
+	if err != nil {
+		return nil, fmt.Errorf("error templating manifest: %w", err)
+	}
+
+	namespace := helmInfo.Spec.Destination.Namespace
+	if namespace == "" {
+		namespace = "default"
+	}
+
+	kubeVersion, err := cliKubeVersion()
+	if err != nil {
+		return nil, fmt.Errorf("error templating manifest: %w", err)
+	}
+
+	client := action.NewInstall(&action.Configuration{Log: func(string, ...interface{}) {}})
+	client.DryRun = true
+	client.DryRunOption = "true"
+	client.ReleaseName = "release-name"
+	client.Replace = true
+	client.ClientOnly = true
+	client.Namespace = namespace
+	client.KubeVersion = &kubeVersion
+
+	rel, err := client.Run(c, vals)
+	if err != nil {
+		return nil, fmt.Errorf("error templating manifest: %w", err)
+	}
+
+	var manifests bytes.Buffer
+	fmt.Fprintln(&manifests, strings.TrimSpace(rel.Manifest))
+	for _, m := range rel.Hooks {
+		fmt.Fprintf(&manifests, "---\n# Source: %s\n%s\n", m.Path, m.Manifest)
+	}
+
+	return manifests.Bytes(), nil
 }
 
 func writeToFile(manifest []byte, location string) error {

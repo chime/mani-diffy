@@ -1,0 +1,22 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cli-parity
+spec:
+  destination:
+    namespace: parity-ns
+    server: https://kubernetes.default.svc
+  project: default
+  source:
+    repoURL: https://github.com/my-org/my-repo.git
+    path: charts/cli-parity
+    helm:
+      ignoreMissingValueFiles: true
+      parameters:
+        - name: greeting
+          value: hi
+      valueFiles:
+        - ../../overrides/cli-parity/prod.yaml
+        - ../../overrides/cli-parity/missing.yaml
+      values: |
+        inline: from-application

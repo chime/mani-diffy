@@ -1,0 +1,7 @@
+apiVersion: v2
+name: needs-dependency
+version: 0.1.0
+dependencies:
+  - name: dependency-source
+    version: 0.1.0
+    repository: file://../dependency-source
