@@ -232,8 +232,8 @@ func TestWalkStopsRenderingAfterError(t *testing.T) {
 
 	err := walk(t, root, output, 1)
 
-	if err == nil || !strings.Contains(err.Error(), "broken chart") {
-		t.Errorf("Expected render error for bad, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "application bad: ") || !strings.Contains(err.Error(), "broken chart") {
+		t.Errorf("Expected render error naming bad, got: %v", err)
 	}
 	for _, name := range []string{"bad", "after"} {
 		if _, err := os.Stat(filepath.Join(output, name)); !os.IsNotExist(err) {

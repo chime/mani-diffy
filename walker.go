@@ -208,6 +208,9 @@ func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.A
 			busy++
 		case r := <-results:
 			busy--
+			if r.err != nil {
+				r.err = fmt.Errorf("application %s: %w", r.job.app.ObjectMeta.Name, r.err)
+			}
 			if r.err == nil && r.rendered {
 				r.err = r.job.root.Hashes.Add(r.job.app.ObjectMeta.Name, r.hash)
 			}
