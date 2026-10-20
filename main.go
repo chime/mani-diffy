@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/charmbracelet/colorprofile"
 	"github.com/chime/mani-diffy/pkg/helm"
 
 	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
@@ -90,7 +92,7 @@ func main() {
 		if err != nil {
 			output.Fatal(err)
 		}
-		roots = append(roots, Root{Input: root.root, Output: root.output, Hashes: h})
+		roots = append(roots, Root{Name: cmp.Or(root.name, root.output), Input: root.root, Output: root.output, Hashes: h})
 	}
 
 	w := newWalker(opts.skipRenderKey, opts.ignoreValueFile, opts.ignoreSuffix, opts.parallelism)
@@ -99,7 +101,11 @@ func main() {
 		w.PostRender = PostRender(opts.postRenderer)
 	}
 
+	display := newProgressDisplay(os.Stderr, roots, opts.verbose)
+	w.Progress = display.update
+
 	stats, err := w.Walk(roots, opts.maxDepth)
+	display.wait()
 	if err != nil {
 		output.Fatal(err)
 	}
@@ -107,18 +113,23 @@ func main() {
 }
 
 // output prints what is always printed: the summary of a run, warnings, and
-// errors.
-var output = log.New(os.Stderr, "", log.LstdFlags)
+// errors, with colors on a terminal, and otherwise only with CLICOLOR_FORCE.
+var output = log.New(colorprofile.NewWriter(os.Stderr, os.Environ()), "", 0)
 
-// summary describes what a run did with the Argo applications it found.
+// summary describes what a run did with the Argo applications it found, and
+// how long it took.
 func summary(stats Stats, took time.Duration) string {
+	return fmt.Sprintf("Applications: %s, in %v", describe(stats), took.Round(time.Millisecond))
+}
+
+// describe describes what was done with Argo applications.
+func describe(stats Stats) string {
 	var s strings.Builder
-	fmt.Fprintf(&s, "Applications: %d rendered", stats.Rendered)
+	fmt.Fprintf(&s, "%d rendered", stats.Rendered)
 	fmt.Fprintf(&s, ", %d unchanged", stats.Unchanged)
 	if stats.Unsupported > 0 {
 		fmt.Fprintf(&s, ", %d skipped since Kustomize isn't supported", stats.Unsupported)
 	}
-	fmt.Fprintf(&s, ", in %v", took.Round(time.Millisecond))
 	return s.String()
 }
 

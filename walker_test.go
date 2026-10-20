@@ -291,6 +291,21 @@ touch "$1/post-rendered"
 // way a config file with several roots does.
 func walkRoots(t *testing.T, parallelism int, postRenderer string, roots ...Root) error {
 	t.Helper()
+	_, err := walkRootsReporting(t, parallelism, postRenderer, roots...)
+	return err
+}
+
+// progressReport is a report of a root's progress.
+type progressReport struct {
+	i        int
+	name     string
+	progress RootProgress
+}
+
+// walkRootsReporting walks several roots like walkRoots, and returns the
+// reports of their progress, in order.
+func walkRootsReporting(t *testing.T, parallelism int, postRenderer string, roots ...Root) ([]progressReport, error) {
+	t.Helper()
 	for i := range roots {
 		if err := os.MkdirAll(roots[i].Output, 0755); err != nil {
 			t.Fatal(err)
@@ -305,8 +320,12 @@ func walkRoots(t *testing.T, parallelism int, postRenderer string, roots ...Root
 	if postRenderer != "" {
 		w.PostRender = PostRender(postRenderer)
 	}
+	var reports []progressReport
+	w.Progress = func(i int, root Root, progress RootProgress) {
+		reports = append(reports, progressReport{i: i, name: root.Name, progress: progress})
+	}
 	_, err := w.Walk(roots, InfiniteDepth)
-	return err
+	return reports, err
 }
 
 func TestWalkRendersEachRootIntoItsOwnOutput(t *testing.T) {
@@ -386,5 +405,50 @@ func TestWalkCountsWhatItDidWithApplications(t *testing.T) {
 	}
 	if want := (Stats{Unchanged: 2, Unsupported: 1}); second != want {
 		t.Errorf("Expected the second walk to count %+v, got %+v", want, second)
+	}
+}
+
+func TestWalkReportsTheProgressOfEachRoot(t *testing.T) {
+	newWorkspace(t)
+	writeFile(t, filepath.Join("bootstrap-a", "apps.yaml"), application(t, "app", "app", ""))
+	writeFile(t, filepath.Join("bootstrap-b", "apps.yaml"), application(t, "parent", "apps", `
+apps:
+- name: child
+  chart: app
+`))
+	if err := os.MkdirAll("bootstrap-empty", 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	reports, err := walkRootsReporting(t, 2, "",
+		Root{Name: "a", Input: "bootstrap-a", Output: "output-a"},
+		Root{Name: "b", Input: "bootstrap-b", Output: "output-b"},
+		Root{Name: "empty", Input: "bootstrap-empty", Output: "output-empty"},
+	)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) < 3 {
+		t.Fatalf("Expected a report for every root before any application is processed, got %v", reports)
+	}
+	if want := []progressReport{
+		{i: 0, name: "a", progress: RootProgress{Outstanding: 1}},
+		{i: 1, name: "b", progress: RootProgress{Outstanding: 1}},
+		{i: 2, name: "empty", progress: RootProgress{Finished: true}},
+	}; !slices.Equal(reports[:3], want) {
+		t.Errorf("Expected the first reports to be %v, got %v", want, reports[:3])
+	}
+	final := map[string]RootProgress{}
+	for _, r := range reports {
+		if final[r.name].Finished {
+			t.Errorf("Expected no reports for %s after it finished, got %v", r.name, r.progress)
+		}
+		final[r.name] = r.progress
+	}
+	for name, want := range map[string]Stats{"a": {Rendered: 1}, "b": {Rendered: 2}, "empty": {}} {
+		if got := final[name]; !got.Finished || got.Outstanding != 0 || got.Stats != want {
+			t.Errorf("Expected %s to finish with %+v, got %+v", name, want, got)
+		}
 	}
 }

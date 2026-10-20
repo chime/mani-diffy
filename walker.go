@@ -63,12 +63,20 @@ type Walker struct {
 	// Parallelism is the maximum number of Argo applications processed at once.
 	Parallelism int
 
+	// Progress, when set, is called with the index of a root in the roots
+	// given to Walk and its progress: for every root before any Argo
+	// application is processed, then for a root whenever one of its
+	// applications is processed.
+	Progress func(i int, root Root, progress RootProgress)
+
 	ignoreSuffix string
 }
 
 // Root is a directory tree of Argo applications to render into an output
 // directory, with the hashes of the applications last rendered there.
 type Root struct {
+	// Name identifies the root in what is reported about it.
+	Name   string
 	Input  string
 	Output string
 	Hashes HashStore
@@ -163,6 +171,19 @@ type result struct {
 // results. Only this goroutine reads or writes visited and the roots' hashes.
 func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.Application) (Stats, error) {
 	var stats Stats
+	progress := make([]RootProgress, len(roots))
+	index := make(map[*Root]int, len(roots))
+	for i := range roots {
+		index[&roots[i]] = i
+	}
+	report := func(i int) {
+		if progress[i].Outstanding == 0 {
+			progress[i].Finished = true
+		}
+		if w.Progress != nil {
+			w.Progress(i, roots[i], progress[i])
+		}
+	}
 	rootApps := make([][]*v1alpha1.Application, len(roots))
 	for i, root := range roots {
 		apps, err := w.findApplications(root.Input)
@@ -201,6 +222,7 @@ func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.A
 				return err
 			}
 			pending = append(pending, job{app: app, root: root, depth: depth, storedHash: hash})
+			progress[index[root]].Outstanding++
 		}
 		return nil
 	}
@@ -211,6 +233,11 @@ func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.A
 	for i := range roots {
 		if firstErr = enqueue(rootApps[i], &roots[i], 0); firstErr != nil {
 			break
+		}
+	}
+	if firstErr == nil {
+		for i := range roots {
+			report(i)
 		}
 	}
 	busy := 0
@@ -231,8 +258,10 @@ func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.A
 			if r.err != nil {
 				r.err = fmt.Errorf("application %s: %w", r.job.app.ObjectMeta.Name, r.err)
 			}
+			i := index[r.job.root]
 			if r.err == nil {
 				stats.count(r)
+				progress[i].Stats.count(r)
 			}
 			if r.err == nil && r.rendered {
 				r.err = r.job.root.Hashes.Add(r.job.app.ObjectMeta.Name, r.hash)
@@ -243,10 +272,25 @@ func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.A
 			if firstErr == nil {
 				firstErr = r.err
 			}
+			progress[i].Outstanding--
+			if firstErr == nil {
+				report(i)
+			}
 		}
 	}
 
 	return stats, firstErr
+}
+
+// RootProgress is how far a walk is with the Argo applications of a root.
+type RootProgress struct {
+	// Stats count what the walk did with the applications processed so far.
+	Stats
+	// Outstanding is how many of the applications found so far are still to
+	// be processed, or in progress.
+	Outstanding int
+	// Finished is whether all of the applications are processed.
+	Finished bool
 }
 
 // count counts what processing an application did with it.

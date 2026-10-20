@@ -34,7 +34,15 @@ https://github.com/chime/mani-diffy/assets/9005904/6c496996-f7af-4932-bf5d-01a5b
 
 ## Output
 
-By default, `mani-diffy` prints a summary of what it did: how many applications it rendered, and how many were unchanged since the last run. With `-v`, it also prints the progress of every application, and Helm's warnings.
+By default, `mani-diffy` prints a summary of what it did: how many applications it rendered, and how many were unchanged since the last run. While rendering, it shows the progress of every root on a terminal, updating in place, or prints a line for each root as it finishes otherwise. With `-v`, it prints the progress of every application, and Helm's warnings, instead.
+
+Colors are used on a terminal. Otherwise, they're only used with [`CLICOLOR_FORCE=1`](https://bixense.com/clicolors/), for logs that show colors, like those of GitHub Actions:
+
+```yaml
+- run: mani-diffy
+  env:
+    CLICOLOR_FORCE: "1"
+```
 
 ## Config file
 
