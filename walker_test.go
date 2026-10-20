@@ -452,3 +452,15 @@ apps:
 		}
 	}
 }
+
+func TestWalkNamesTheRootInErrors(t *testing.T) {
+	newWorkspace(t)
+	writeFile(t, filepath.Join("bootstrap-a", "apps.yaml"), application(t, "app", "app", ""))
+	writeFile(t, filepath.Join("bootstrap-b", "apps.yaml"), application(t, "bad", "broken", ""))
+
+	err := walkRoots(t, 2, "", Root{Name: "a", Input: "bootstrap-a", Output: "output-a"}, Root{Name: "b", Input: "bootstrap-b", Output: "output-b"})
+
+	if err == nil || !strings.HasPrefix(err.Error(), "b: application bad: ") || !strings.Contains(err.Error(), "broken chart") {
+		t.Errorf("Expected the error to name the root and the application, got: %v", err)
+	}
+}

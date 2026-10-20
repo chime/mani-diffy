@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"log"
@@ -256,7 +257,7 @@ func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.A
 		case r := <-results:
 			busy--
 			if r.err != nil {
-				r.err = fmt.Errorf("application %s: %w", r.job.app.ObjectMeta.Name, r.err)
+				r.err = fmt.Errorf("%s: application %s: %w", cmp.Or(r.job.root.Name, r.job.root.Output), r.job.app.ObjectMeta.Name, r.err)
 			}
 			i := index[r.job.root]
 			if r.err == nil {
