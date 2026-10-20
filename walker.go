@@ -151,19 +151,28 @@ type job struct {
 	storedHash string
 }
 
+// An outcome is what processing a job did with its Argo application. It is
+// zero when processing failed before the application was rendered or found
+// unchanged.
+type outcome int
+
+const (
+	rendered outcome = iota + 1
+	// unchanged is when the application wasn't rendered, since it didn't
+	// change since the last run.
+	unchanged
+	// unsupported is when the application wasn't rendered, since it uses
+	// Kustomize.
+	unsupported
+)
+
 // result is the outcome of processing a job.
 type result struct {
 	job      job
-	rendered bool
-	// unchanged is whether the application wasn't rendered, since it didn't
-	// change since the last run.
-	unchanged bool
-	// unsupported is whether the application wasn't rendered, since it uses
-	// Kustomize.
-	unsupported bool
-	hash        string
-	children    []*v1alpha1.Application
-	err         error
+	outcome  outcome
+	hash     string
+	children []*v1alpha1.Application
+	err      error
 }
 
 // walk renders the Argo applications found in the roots' inputs and,
@@ -262,7 +271,7 @@ func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.A
 				stats.count(r)
 				progress[i].Stats.count(r)
 			}
-			if r.err == nil && r.rendered {
+			if r.err == nil && r.outcome == rendered {
 				r.err = r.job.root.Hashes.Add(r.job.app.ObjectMeta.Name, r.hash)
 			}
 			if r.err == nil {
@@ -300,12 +309,12 @@ type RootProgress struct {
 
 // count counts what processing an application did with it.
 func (s *Stats) count(r result) {
-	switch {
-	case r.rendered:
+	switch r.outcome {
+	case rendered:
 		s.Rendered++
-	case r.unchanged:
+	case unchanged:
 		s.Unchanged++
-	case r.unsupported:
+	case unsupported:
 		s.Unsupported++
 	}
 }
@@ -371,7 +380,7 @@ func (w *Walker) process(j job, maxDepth int) result {
 	hash, err := w.GenerateHash(j.app)
 	if err != nil {
 		if errors.Is(err, kustomize.ErrNotSupported) {
-			r.unsupported = true
+			r.outcome = unsupported
 		} else {
 			r.err = err
 		}
@@ -404,16 +413,16 @@ func (w *Walker) process(j job, maxDepth int) result {
 		log.Printf("No match detected. Render: %s\n", j.app.ObjectMeta.Name)
 		if err := w.Render(j.app, path); err != nil {
 			if errors.Is(err, kustomize.ErrNotSupported) {
-				r.unsupported = true
+				r.outcome = unsupported
 			} else {
 				r.err = err
 			}
 			return r
 		}
-		r.rendered = true
+		r.outcome = rendered
 		r.hash = hash
 	} else {
-		r.unchanged = true
+		r.outcome = unchanged
 	}
 
 	// If we've reached the max depth, stop walking

@@ -1,6 +1,7 @@
 package helm
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"log"
@@ -401,6 +402,27 @@ kind: Application
 		_, err = template(app, "", "")
 		if err == nil || !strings.Contains(err.Error(), "replicas") {
 			t.Errorf("Expected a schema validation error about replicas, got: %v", err)
+		}
+	})
+
+	t.Run("RunLogsTheErrorWhenRenderingFails", func(t *testing.T) {
+		apps, err := Read("crdData_cli_parity.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		app := apps[0]
+		app.Spec.Source.Helm.Parameters[0].Name = "replicas"
+		app.Spec.Source.Helm.Parameters[0].Value = "not-a-number"
+		var logged bytes.Buffer
+		log.SetOutput(&logged)
+		defer log.SetOutput(os.Stderr)
+
+		if err := Run(app, t.TempDir(), "", ""); err == nil {
+			t.Fatal("Expected rendering to fail")
+		}
+
+		if !strings.Contains(logged.String(), "replicas") {
+			t.Errorf("Expected the log to say why rendering failed, got: %q", logged.String())
 		}
 	})
 

@@ -275,6 +275,22 @@ func installDependencies(chartDirectory string) error {
 // `helm template <chart> -n <namespace> -f <value files> --set <parameters>`
 // run from the chart directory.
 func template(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueFile string) ([]byte, error) {
+	r, err := prepareRelease(helmInfo, skipRenderKey, ignoreValueFile)
+	if err != nil {
+		return nil, err
+	}
+	return r.render()
+}
+
+// release is an Application's chart and values, ready to be rendered.
+type release struct {
+	chartDir  string
+	namespace string
+	vals      map[string]interface{}
+}
+
+// prepareRelease reads the values to render an Application's chart with.
+func prepareRelease(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueFile string) (*release, error) {
 	sourcePath := helmInfo.Spec.Source.Path
 	chartPath := strings.Split(sourcePath, "/")
 	chartDir := filepath.Join(sourcePath, "..", chartPath[len(chartPath)-1])
@@ -307,14 +323,19 @@ func template(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueF
 		return nil, fmt.Errorf("error templating manifest: %w", err)
 	}
 
-	c, err := loadChart(chartDir)
-	if err != nil {
-		return nil, fmt.Errorf("error templating manifest: %w", err)
-	}
-
 	namespace := helmInfo.Spec.Destination.Namespace
 	if namespace == "" {
 		namespace = "default"
+	}
+
+	return &release{chartDir: chartDir, namespace: namespace, vals: vals}, nil
+}
+
+// render renders the chart.
+func (r *release) render() ([]byte, error) {
+	c, err := loadChart(r.chartDir)
+	if err != nil {
+		return nil, fmt.Errorf("error templating manifest: %w", err)
 	}
 
 	kubeVersion, err := cliKubeVersion()
@@ -328,10 +349,10 @@ func template(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueF
 	client.ReleaseName = "release-name"
 	client.Replace = true
 	client.ClientOnly = true
-	client.Namespace = namespace
+	client.Namespace = r.namespace
 	client.KubeVersion = &kubeVersion
 
-	rel, err := client.Run(c, vals)
+	rel, err := client.Run(c, r.vals)
 	if err != nil {
 		return nil, fmt.Errorf("error templating manifest: %w", err)
 	}
@@ -598,7 +619,7 @@ func Run(crd *v1alpha1.Application, output string, skipRenderKey string, ignoreV
 		log.Printf(
 			"error generating manifest for %s error: %v\n",
 			crd.ObjectMeta.Name,
-			string(manifest),
+			err,
 		)
 		return err
 	}
