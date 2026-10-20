@@ -81,7 +81,7 @@ func main() {
 		w.PostRender = PostRender(*postRenderer)
 	}
 
-	if err := w.Walk(*root, *renderDir, *maxDepth, h); err != nil {
+	if err := w.Walk([]Root{{Input: *root, Output: *renderDir, Hashes: h}}, *maxDepth); err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("mani-diffy took %v to run", time.Since(start))

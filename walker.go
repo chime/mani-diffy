@@ -66,20 +66,33 @@ type Walker struct {
 	ignoreSuffix string
 }
 
-// Walk walks a directory tree looking for Argo applications and renders them
-func (w *Walker) Walk(inputPath, outputPath string, maxDepth int, hashes HashStore) error {
+// Root is a directory tree of Argo applications to render into an output
+// directory, with the hashes of the applications last rendered there.
+type Root struct {
+	Input  string
+	Output string
+	Hashes HashStore
+}
+
+// Walk walks directory trees looking for Argo applications and renders them.
+// The applications of all roots are rendered by the same workers.
+func (w *Walker) Walk(roots []Root, maxDepth int) error {
 	visited := make(map[string]*v1alpha1.Application)
 
-	if err := w.walk(inputPath, outputPath, maxDepth, visited, hashes); err != nil {
+	if err := w.walk(roots, maxDepth, visited); err != nil {
 		return err
 	}
 
-	if err := hashes.Save(); err != nil {
-		return err
-	}
+	for _, root := range roots {
+		if err := root.Hashes.Save(); err != nil {
+			return err
+		}
 
-	if maxDepth == InfiniteDepth {
-		return pruneUnvisited(visited, outputPath)
+		if maxDepth == InfiniteDepth {
+			if err := pruneUnvisited(visited, root.Output); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
@@ -111,6 +124,7 @@ func pruneUnvisited(visited map[string]*v1alpha1.Application, outputPath string)
 // job is an Argo application for a worker to process.
 type job struct {
 	app        *v1alpha1.Application
+	root       *Root
 	depth      int
 	storedHash string
 }
@@ -124,14 +138,18 @@ type result struct {
 	err      error
 }
 
-// walk renders the Argo applications found in inputPath and, recursively, the
-// Argo applications they render. Up to Parallelism workers process
-// applications while this goroutine hands out jobs and collects results. Only
-// this goroutine reads or writes visited and hashes.
-func (w *Walker) walk(inputPath, outputPath string, maxDepth int, visited map[string]*v1alpha1.Application, hashes HashStore) error {
-	roots, err := w.findApplications(inputPath)
-	if err != nil {
-		return err
+// walk renders the Argo applications found in the roots' inputs and,
+// recursively, the Argo applications they render. Up to Parallelism workers
+// process applications while this goroutine hands out jobs and collects
+// results. Only this goroutine reads or writes visited and the roots' hashes.
+func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.Application) error {
+	rootApps := make([][]*v1alpha1.Application, len(roots))
+	for i, root := range roots {
+		apps, err := w.findApplications(root.Input)
+		if err != nil {
+			return err
+		}
+		rootApps[i] = apps
 	}
 
 	jobs := make(chan job)
@@ -142,15 +160,15 @@ func (w *Walker) walk(inputPath, outputPath string, maxDepth int, visited map[st
 	for range max(w.Parallelism, 1) {
 		workers.Go(func() {
 			for j := range jobs {
-				results <- w.process(j, outputPath, maxDepth)
+				results <- w.process(j, maxDepth)
 			}
 		})
 	}
 
 	var pending []job
-	enqueue := func(apps []*v1alpha1.Application, depth int) error {
+	enqueue := func(apps []*v1alpha1.Application, root *Root, depth int) error {
 		for _, app := range apps {
-			firstVisit, err := visit(visited, outputPath, app)
+			firstVisit, err := visit(visited, root.Output, app)
 			if err != nil {
 				return err
 			}
@@ -158,18 +176,23 @@ func (w *Walker) walk(inputPath, outputPath string, maxDepth int, visited map[st
 				continue
 			}
 
-			hash, err := hashes.Get(app.ObjectMeta.Name)
+			hash, err := root.Hashes.Get(app.ObjectMeta.Name)
 			if err != nil {
 				return err
 			}
-			pending = append(pending, job{app: app, depth: depth, storedHash: hash})
+			pending = append(pending, job{app: app, root: root, depth: depth, storedHash: hash})
 		}
 		return nil
 	}
 
 	// After the first error no new jobs are handed out, but the jobs in
 	// progress are waited for.
-	firstErr := enqueue(roots, 0)
+	var firstErr error
+	for i := range roots {
+		if firstErr = enqueue(rootApps[i], &roots[i], 0); firstErr != nil {
+			break
+		}
+	}
 	busy := 0
 	for busy > 0 || (firstErr == nil && len(pending) > 0) {
 		// Sending on a nil channel blocks forever, which disables that case.
@@ -186,10 +209,10 @@ func (w *Walker) walk(inputPath, outputPath string, maxDepth int, visited map[st
 		case r := <-results:
 			busy--
 			if r.err == nil && r.rendered {
-				r.err = hashes.Add(r.job.app.ObjectMeta.Name, r.hash)
+				r.err = r.job.root.Hashes.Add(r.job.app.ObjectMeta.Name, r.hash)
 			}
 			if r.err == nil {
-				r.err = enqueue(r.children, r.job.depth+1)
+				r.err = enqueue(r.children, r.job.root, r.job.depth+1)
 			}
 			if firstErr == nil {
 				firstErr = r.err
@@ -253,9 +276,9 @@ func (w *Walker) findApplications(inputPath string) ([]*v1alpha1.Application, er
 
 // process renders an Argo application if it changed since the last run, then
 // finds the Argo applications it renders.
-func (w *Walker) process(j job, outputPath string, maxDepth int) result {
+func (w *Walker) process(j job, maxDepth int) result {
 	r := result{job: j}
-	path := filepath.Join(outputPath, j.app.ObjectMeta.Name)
+	path := filepath.Join(j.root.Output, j.app.ObjectMeta.Name)
 
 	// COMPARE HASHES HERE. STEP INTO RENDER IF NO MATCH
 	hash, err := w.GenerateHash(j.app)
