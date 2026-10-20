@@ -2,6 +2,8 @@ package main
 
 import (
 	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,20 +36,33 @@ func PostRender(command string) PostRenderer {
 }
 
 // newWalker returns a Walker that renders Argo applications with Helm, or by
-// copying their source when they don't use Helm.
-func newWalker(skipRenderKey, ignoreValueFile, ignoreSuffix string, parallelism int) *Walker {
+// copying their source when they don't use Helm. When maskRandomValues is set,
+// the values that charts fill with a different value on every render are
+// masked in Helm-rendered manifests.
+func newWalker(skipRenderKey, ignoreValueFile, ignoreSuffix string, parallelism int, maskRandomValues bool) *Walker {
 	return &Walker{
 		CopySource: CopySource,
-		HelmTemplate: func(application *v1alpha1.Application, output string) error {
-			return helm.Run(application, output, skipRenderKey, ignoreValueFile)
+		HelmTemplate: func(application *v1alpha1.Application, output string) (helm.Rendering, error) {
+			return helm.Run(application, output, skipRenderKey, ignoreValueFile, maskRandomValues)
 		},
 		GenerateHash: func(application *v1alpha1.Application) (string, error) {
-			return helm.GenerateHash(application, ignoreValueFile)
+			hash, err := helm.GenerateHash(application, ignoreValueFile)
+			if err != nil || !maskRandomValues {
+				return hash, err
+			}
+			return hashMaskingRandomValues(hash), nil
 		},
 		Progress:     func(int, Root, RootProgress) {},
 		Parallelism:  parallelism,
 		ignoreSuffix: ignoreSuffix,
 	}
+}
+
+// hashMaskingRandomValues returns an application's hash for when its random
+// values are masked, which changes its rendered manifests.
+func hashMaskingRandomValues(hash string) string {
+	sum := sha256.Sum256([]byte(hash + "\nmask-random-values"))
+	return hex.EncodeToString(sum[:])
 }
 
 func main() {
@@ -96,7 +111,7 @@ func main() {
 		roots = append(roots, Root{Name: cmp.Or(root.name, root.output), Input: root.root, Output: root.output, Hashes: h})
 	}
 
-	w := newWalker(opts.skipRenderKey, opts.ignoreValueFile, opts.ignoreSuffix, opts.parallelism)
+	w := newWalker(opts.skipRenderKey, opts.ignoreValueFile, opts.ignoreSuffix, opts.parallelism, opts.maskRandomValues)
 
 	if opts.postRenderer != "" {
 		w.PostRender = PostRender(opts.postRenderer)
@@ -127,6 +142,9 @@ func summary(stats Stats, took time.Duration) string {
 func describe(stats Stats) string {
 	var s strings.Builder
 	fmt.Fprintf(&s, "%d rendered", stats.Rendered)
+	if stats.RenderedTwice > 0 {
+		fmt.Fprintf(&s, " (%d twice, to mask random values)", stats.RenderedTwice)
+	}
 	fmt.Fprintf(&s, ", %d unchanged", stats.Unchanged)
 	if stats.Unsupported > 0 {
 		fmt.Fprintf(&s, ", %d skipped since Kustomize isn't supported", stats.Unsupported)

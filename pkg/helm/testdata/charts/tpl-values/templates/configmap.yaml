@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tpl-values
+data:
+  value: {{ tpl .Values.value . | quote }}
+  static: {{ .Values.static | quote }}

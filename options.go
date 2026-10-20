@@ -19,16 +19,17 @@ import (
 
 // options configure a run of mani-diffy.
 type options struct {
-	workdir         string
-	roots           []rootOptions
-	maxDepth        int
-	hashStore       string
-	hashStrategy    string
-	ignoreSuffix    string
-	skipRenderKey   string
-	ignoreValueFile string
-	postRenderer    string
-	parallelism     int
+	workdir          string
+	roots            []rootOptions
+	maxDepth         int
+	hashStore        string
+	hashStrategy     string
+	ignoreSuffix     string
+	skipRenderKey    string
+	ignoreValueFile  string
+	postRenderer     string
+	parallelism      int
+	maskRandomValues bool
 
 	// configFile is the config file to read the options that weren't given
 	// by flags from.
@@ -68,6 +69,7 @@ func parseOptions(args []string) (*options, error) {
 	ignoreValueFile := flags.String("ignore-value-file", "overrides-to-ignore", "Override file to ignore based on filename")
 	postRenderer := flags.String("post-renderer", "", "When provided, binary will be called after an application is rendered.")
 	parallelism := flags.Int("parallelism", runtime.NumCPU(), "Maximum number of applications rendered at once.")
+	maskRandomValues := flags.Bool("mask-random-values", false, "Render twice the charts that call random functions, and replace the values that differ between the renders with CONSCIOUSLY_NOT_RENDERED.")
 	configFile := flags.String("config", defaultConfigFile, "Config file with the roots to render and settings for the flags that aren't given, relative to the workdir. Giving -root or -output renders only that root instead of the config file's roots.")
 	only := flags.String("only", "", "Comma separated names of the config file's roots to render, instead of all of them.")
 	verbose := flags.Bool("v", false, "Print the progress of every application, and Helm's warnings, instead of only a summary.")
@@ -79,21 +81,22 @@ func parseOptions(args []string) (*options, error) {
 	flags.Visit(func(f *flag.Flag) { given[f.Name] = true })
 
 	return &options{
-		workdir:         *workdir,
-		roots:           []rootOptions{{root: *root, output: *renderDir}},
-		maxDepth:        *maxDepth,
-		hashStore:       *hashStore,
-		hashStrategy:    *hashStrategy,
-		ignoreSuffix:    *ignoreSuffix,
-		skipRenderKey:   *skipRenderKey,
-		ignoreValueFile: *ignoreValueFile,
-		postRenderer:    *postRenderer,
-		parallelism:     *parallelism,
-		configFile:      *configFile,
-		only:            *only,
-		listRoots:       *listRoots,
-		verbose:         *verbose,
-		flags:           given,
+		workdir:          *workdir,
+		roots:            []rootOptions{{root: *root, output: *renderDir}},
+		maxDepth:         *maxDepth,
+		hashStore:        *hashStore,
+		hashStrategy:     *hashStrategy,
+		ignoreSuffix:     *ignoreSuffix,
+		skipRenderKey:    *skipRenderKey,
+		ignoreValueFile:  *ignoreValueFile,
+		postRenderer:     *postRenderer,
+		parallelism:      *parallelism,
+		maskRandomValues: *maskRandomValues,
+		configFile:       *configFile,
+		only:             *only,
+		listRoots:        *listRoots,
+		verbose:          *verbose,
+		flags:            given,
 	}, nil
 }
 
@@ -101,11 +104,12 @@ const defaultConfigFile = ".mani-diffy.yaml"
 
 // config is the contents of a config file. Settings it doesn't have are nil.
 type config struct {
-	HashStore       *string      `yaml:"hashStore"`
-	IgnoreSuffix    *string      `yaml:"ignoreSuffix"`
-	SkipRenderKey   *string      `yaml:"skipRenderKey"`
-	IgnoreValueFile *string      `yaml:"ignoreValueFile"`
-	Roots           []configRoot `yaml:"roots"`
+	HashStore        *string      `yaml:"hashStore"`
+	IgnoreSuffix     *string      `yaml:"ignoreSuffix"`
+	SkipRenderKey    *string      `yaml:"skipRenderKey"`
+	IgnoreValueFile  *string      `yaml:"ignoreValueFile"`
+	MaskRandomValues *bool        `yaml:"maskRandomValues"`
+	Roots            []configRoot `yaml:"roots"`
 }
 
 type configRoot struct {
@@ -135,10 +139,16 @@ func (o *options) loadConfig() error {
 			*option = *value
 		}
 	}
+	setBool := func(flag string, value *bool, option *bool) {
+		if value != nil && !o.flags[flag] {
+			*option = *value
+		}
+	}
 	setString("hash-store", c.HashStore, &o.hashStore)
 	setString("ignore-suffix", c.IgnoreSuffix, &o.ignoreSuffix)
 	setString("skip-render-key", c.SkipRenderKey, &o.skipRenderKey)
 	setString("ignore-value-file", c.IgnoreValueFile, &o.ignoreValueFile)
+	setBool("mask-random-values", c.MaskRandomValues, &o.maskRandomValues)
 
 	if len(c.Roots) > 0 && !o.flags["root"] && !o.flags["output"] {
 		o.roots = nil

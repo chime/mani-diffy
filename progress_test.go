@@ -85,10 +85,10 @@ func TestLiveDisplayPrintsEveryRootInOrderOnceDone(t *testing.T) {
 
 	display.update(0, displayRoots[0], RootProgress{Outstanding: 2})
 	display.update(1, displayRoots[1], RootProgress{Finished: true})
-	display.update(0, displayRoots[0], RootProgress{Stats: Stats{Rendered: 2}, Finished: true})
+	display.update(0, displayRoots[0], RootProgress{Stats: Stats{Rendered: 2, RenderedTwice: 1}, Finished: true})
 	display.wait()
 
-	want := "✓ use1-stable  2 rendered, 0 unchanged\n" +
+	want := "✓ use1-stable  2 rendered (1 twice, to mask random values), 0 unchanged\n" +
 		"✓ empty        0 rendered, 0 unchanged"
 	if printed := ansi.Strip(out.String()); !strings.Contains(strings.ReplaceAll(printed, "\r", ""), want) {
 		t.Errorf("Expected %q to be printed, got:\n%s", want, printed)

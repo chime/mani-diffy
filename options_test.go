@@ -29,6 +29,7 @@ const configWithEverything = `hashStore: json
 ignoreSuffix: -console
 skipRenderKey: appTag
 ignoreValueFile: overrides/apptags
+maskRandomValues: true
 roots:
   - name: use1-stable
     root: bootstrap/child-applications/us-east-1/stable
@@ -52,7 +53,7 @@ func TestOptionsWithoutConfigFile(t *testing.T) {
 	if want := []rootOptions{{root: "bootstrap", output: ".zz.auto-generated"}}; !slices.Equal(opts.roots, want) {
 		t.Errorf("Expected roots %v, got %v", want, opts.roots)
 	}
-	if opts.hashStore != "sumfile" || opts.ignoreSuffix != "-ignore" || opts.skipRenderKey != "do-not-render" || opts.ignoreValueFile != "overrides-to-ignore" {
+	if opts.hashStore != "sumfile" || opts.ignoreSuffix != "-ignore" || opts.skipRenderKey != "do-not-render" || opts.ignoreValueFile != "overrides-to-ignore" || opts.maskRandomValues {
 		t.Errorf("Expected the flag defaults, got %+v", opts)
 	}
 }
@@ -66,19 +67,19 @@ func TestOptionsFromConfigFile(t *testing.T) {
 	if !slices.Equal(opts.roots, configRoots) {
 		t.Errorf("Expected roots %v, got %v", configRoots, opts.roots)
 	}
-	if opts.hashStore != "json" || opts.ignoreSuffix != "-console" || opts.skipRenderKey != "appTag" || opts.ignoreValueFile != "overrides/apptags" {
+	if opts.hashStore != "json" || opts.ignoreSuffix != "-console" || opts.skipRenderKey != "appTag" || opts.ignoreValueFile != "overrides/apptags" || !opts.maskRandomValues {
 		t.Errorf("Expected the config file's settings, got %+v", opts)
 	}
 }
 
 func TestOptionsFromFlagsOverrideConfigFile(t *testing.T) {
 	opts, err := loadOptions(t, configWithEverything,
-		"-hash-store", "sumfile", "-ignore-suffix", "-ignore", "-skip-render-key", "tag", "-ignore-value-file", "tags")
+		"-hash-store", "sumfile", "-ignore-suffix", "-ignore", "-skip-render-key", "tag", "-ignore-value-file", "tags", "-mask-random-values=false")
 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.hashStore != "sumfile" || opts.ignoreSuffix != "-ignore" || opts.skipRenderKey != "tag" || opts.ignoreValueFile != "tags" {
+	if opts.hashStore != "sumfile" || opts.ignoreSuffix != "-ignore" || opts.skipRenderKey != "tag" || opts.ignoreValueFile != "tags" || opts.maskRandomValues {
 		t.Errorf("Expected the flags' settings, got %+v", opts)
 	}
 	if !slices.Equal(opts.roots, configRoots) {
@@ -233,6 +234,7 @@ func TestSummary(t *testing.T) {
 		stats Stats
 		want  string
 	}{
+		{Stats{Rendered: 1204, RenderedTwice: 156, Unchanged: 3780}, "Applications: 1204 rendered (156 twice, to mask random values), 3780 unchanged, in 23.012s"},
 		{Stats{Rendered: 3, Unchanged: 1}, "Applications: 3 rendered, 1 unchanged, in 23.012s"},
 		{Stats{Rendered: 3, Unsupported: 2}, "Applications: 3 rendered, 0 unchanged, 2 skipped since Kustomize isn't supported, in 23.012s"},
 	} {

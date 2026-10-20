@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: random
+data:
+  token: {{ randAlphaNum 16 | quote }}
+{{- range .Values.apps }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ .name }}
+spec:
+  destination:
+    namespace: default
+  source:
+    path: charts/{{ .chart }}
+    helm:
+      values: |
+        name: {{ .name }}
+{{- end }}

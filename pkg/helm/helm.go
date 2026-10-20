@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
 	"github.com/chime/mani-diffy/pkg/kustomize"
+	"github.com/chime/mani-diffy/pkg/randomvalues"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
@@ -83,6 +85,10 @@ func cliVersions(info *debug.BuildInfo) (string, chartutil.KubeVersion, error) {
 }
 
 var settings = cli.New()
+
+// notRendered replaces the values that manifests leave out: the value of the
+// skip-render key, and random values.
+const notRendered = "CONSCIOUSLY_NOT_RENDERED"
 
 // dependencyUpdates serializes dependency updates so that applications sharing
 // a chart do not download its dependencies concurrently.
@@ -159,16 +165,23 @@ func createTempFile(payload string) (string, error) {
 	return tmpYamlFile.Name(), nil
 }
 
-// loadChart loads a chart, installing its dependencies first if they are missing.
-func loadChart(chartPath string) (*chart.Chart, error) {
+// loadedChart is a chart, and the files it was loaded from.
+type loadedChart struct {
+	*chart.Chart
+	source chartSource
+}
+
+// loadChart loads a chart, installing its dependencies first if they are
+// missing.
+func loadChart(chartPath string) (loadedChart, error) {
 	c, err := loadCachedChart(chartPath)
 	if err != nil {
-		return nil, err
+		return loadedChart{}, err
 	}
-	if err := checkIfInstallable(c); err != nil {
-		return nil, err
+	if err := checkIfInstallable(c.Chart); err != nil {
+		return loadedChart{}, err
 	}
-	if !missingDependencies(c) {
+	if !missingDependencies(c.Chart) {
 		return c, nil
 	}
 
@@ -177,60 +190,105 @@ func loadChart(chartPath string) (*chart.Chart, error) {
 
 	// Another application using this chart may have installed them already.
 	if c, err = readChart(chartPath); err != nil {
-		return nil, err
+		return loadedChart{}, err
 	}
-	if !missingDependencies(c) {
+	if !missingDependencies(c.Chart) {
 		return c, nil
 	}
 	if err := installDependencies(chartPath); err != nil {
-		return nil, err
+		return loadedChart{}, err
 	}
 	return readChart(chartPath)
+}
+
+// chartSource is the files of a chart directory as read from disk.
+type chartSource struct {
+	files []*loader.BufferedFile
+	// callsRandomFunctions is whether any of the files has a template action
+	// that calls a random function.
+	callsRandomFunctions bool
+}
+
+// load loads a chart from the files.
+func (s chartSource) load() (loadedChart, error) {
+	c, err := loader.LoadFiles(s.files)
+	if err != nil {
+		return loadedChart{}, err
+	}
+	return loadedChart{Chart: c, source: s}, nil
 }
 
 // loadCachedChart loads a chart from its files as last read from disk, reading
 // them if they haven't been. Each call returns a new chart, since rendering
 // modifies it.
-func loadCachedChart(chartPath string) (*chart.Chart, error) {
+func loadCachedChart(chartPath string) (loadedChart, error) {
 	key, err := filepath.Abs(chartPath)
 	if err != nil {
-		return nil, err
+		return loadedChart{}, err
 	}
-	read, _ := chartFiles.LoadOrStore(key, sync.OnceValues(func() ([]*loader.BufferedFile, error) {
-		return readChartFiles(chartPath)
+	read, _ := chartFiles.LoadOrStore(key, sync.OnceValues(func() (chartSource, error) {
+		return readChartSource(chartPath)
 	}))
-	files, err := read.(func() ([]*loader.BufferedFile, error))()
+	source, err := read.(func() (chartSource, error))()
 	if err != nil {
-		return nil, err
+		return loadedChart{}, err
 	}
-	return loader.LoadFiles(files)
+	return source.load()
 }
 
 // readChart loads a chart from disk, and caches its files for loadCachedChart.
-func readChart(chartPath string) (*chart.Chart, error) {
+func readChart(chartPath string) (loadedChart, error) {
 	key, err := filepath.Abs(chartPath)
 	if err != nil {
-		return nil, err
+		return loadedChart{}, err
 	}
-	files, err := readChartFiles(chartPath)
+	source, err := readChartSource(chartPath)
 	if err != nil {
-		return nil, err
+		return loadedChart{}, err
 	}
-	chartFiles.Store(key, func() ([]*loader.BufferedFile, error) { return files, nil })
-	return loader.LoadFiles(files)
+	chartFiles.Store(key, func() (chartSource, error) { return source, nil })
+	return source.load()
 }
 
-// readChartFiles reads the files of a chart from disk.
-func readChartFiles(chartPath string) ([]*loader.BufferedFile, error) {
+// readChartSource reads the files of a chart from disk.
+func readChartSource(chartPath string) (chartSource, error) {
 	c, err := loader.Load(chartPath)
 	if err != nil {
-		return nil, err
+		return chartSource{}, err
 	}
-	files := make([]*loader.BufferedFile, len(c.Raw))
+	source := chartSource{files: make([]*loader.BufferedFile, len(c.Raw))}
 	for i, f := range c.Raw {
-		files[i] = &loader.BufferedFile{Name: f.Name, Data: f.Data}
+		source.files[i] = &loader.BufferedFile{Name: f.Name, Data: f.Data}
+		source.callsRandomFunctions = source.callsRandomFunctions || randomFunctionCall.Match(f.Data)
 	}
-	return files, nil
+	return source, nil
+}
+
+// randomFunctionCall matches a template action that calls a template function
+// whose output is random or depends on the current time.
+var randomFunctionCall = regexp.MustCompile(`\{\{[^}]*\b(randAlphaNum|randAlpha|randAscii|randNumeric|randBytes|randInt|shuffle|uuidv4|now|ago|genPrivateKey|genCA|genCAWithKey|genSelfSignedCert|genSelfSignedCertWithKey|genSignedCert|genSignedCertWithKey|bcrypt|htpasswd|encryptAES)\b`)
+
+// valuesCallRandomFunctions reports whether any string in the values calls a
+// random function in a template action. Values are plain data, but charts can
+// render them as templates with tpl.
+func valuesCallRandomFunctions(v interface{}) bool {
+	switch v := v.(type) {
+	case string:
+		return randomFunctionCall.MatchString(v)
+	case map[string]interface{}:
+		for _, item := range v {
+			if valuesCallRandomFunctions(item) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, item := range v {
+			if valuesCallRandomFunctions(item) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func checkIfInstallable(c *chart.Chart) error {
@@ -271,17 +329,6 @@ func installDependencies(chartDirectory string) error {
 	return nil
 }
 
-// template renders an Application's chart the same way as
-// `helm template <chart> -n <namespace> -f <value files> --set <parameters>`
-// run from the chart directory.
-func template(helmInfo *v1alpha1.Application, skipRenderKey string, ignoreValueFile string) ([]byte, error) {
-	r, err := prepareRelease(helmInfo, skipRenderKey, ignoreValueFile)
-	if err != nil {
-		return nil, err
-	}
-	return r.render()
-}
-
 // release is an Application's chart and values, ready to be rendered.
 type release struct {
 	chartDir  string
@@ -315,7 +362,7 @@ func prepareRelease(helmInfo *v1alpha1.Application, skipRenderKey string, ignore
 	}
 
 	if skipRenderKey != "" {
-		valueOpts.Values = append(valueOpts.Values, fmt.Sprintf("%s=%s", skipRenderKey, "CONSCIOUSLY_NOT_RENDERED"))
+		valueOpts.Values = append(valueOpts.Values, fmt.Sprintf("%s=%s", skipRenderKey, notRendered))
 	}
 
 	vals, err := valueOpts.MergeValues(getter.All(settings))
@@ -331,16 +378,17 @@ func prepareRelease(helmInfo *v1alpha1.Application, skipRenderKey string, ignore
 	return &release{chartDir: chartDir, namespace: namespace, vals: vals}, nil
 }
 
-// render renders the chart.
-func (r *release) render() ([]byte, error) {
+// render renders the chart, and reports whether its files call a random
+// function.
+func (r *release) render() (manifest []byte, chartCallsRandomFunctions bool, err error) {
 	c, err := loadChart(r.chartDir)
 	if err != nil {
-		return nil, fmt.Errorf("error templating manifest: %w", err)
+		return nil, false, fmt.Errorf("error templating manifest: %w", err)
 	}
 
 	kubeVersion, err := cliKubeVersion()
 	if err != nil {
-		return nil, fmt.Errorf("error templating manifest: %w", err)
+		return nil, false, fmt.Errorf("error templating manifest: %w", err)
 	}
 
 	client := action.NewInstall(&action.Configuration{Log: func(string, ...interface{}) {}})
@@ -352,9 +400,9 @@ func (r *release) render() ([]byte, error) {
 	client.Namespace = r.namespace
 	client.KubeVersion = &kubeVersion
 
-	rel, err := client.Run(c, r.vals)
+	rel, err := client.Run(c.Chart, r.vals)
 	if err != nil {
-		return nil, fmt.Errorf("error templating manifest: %w", err)
+		return nil, false, fmt.Errorf("error templating manifest: %w", err)
 	}
 
 	var manifests bytes.Buffer
@@ -363,7 +411,7 @@ func (r *release) render() ([]byte, error) {
 		fmt.Fprintf(&manifests, "---\n# Source: %s\n%s\n", m.Path, m.Manifest)
 	}
 
-	return manifests.Bytes(), nil
+	return manifests.Bytes(), c.source.callsRandomFunctions, nil
 }
 
 func writeToFile(manifest []byte, location string) error {
@@ -613,18 +661,56 @@ func generateHashOnCrd(crd *v1alpha1.Application) (string, error) {
 	return hex.EncodeToString(sum), nil
 }
 
-func Run(crd *v1alpha1.Application, output string, skipRenderKey string, ignoreValueFile string) error {
-	manifest, err := template(crd, skipRenderKey, ignoreValueFile)
+// Rendering is how an Application's chart was rendered.
+type Rendering struct {
+	// Twice is whether the chart was rendered twice, to mask its random values.
+	Twice bool
+}
+
+// Run renders an Application's chart into output. When maskRandomValues is set
+// and the chart or its values call a random function, the chart is rendered
+// twice, and the values that differ between the renders are masked.
+func Run(crd *v1alpha1.Application, output string, skipRenderKey string, ignoreValueFile string, maskRandomValues bool) (Rendering, error) {
+	manifest, rendering, err := template(crd, skipRenderKey, ignoreValueFile, maskRandomValues)
 	if err != nil {
 		log.Printf(
 			"error generating manifest for %s error: %v\n",
 			crd.ObjectMeta.Name,
 			err,
 		)
-		return err
+		return Rendering{}, err
 	}
-	err = writeToFile(manifest, output)
-	return err
+	return rendering, writeToFile(manifest, output)
+}
+
+// template renders an Application's chart the same way as
+// `helm template <chart> -n <namespace> -f <value files> --set <parameters>`
+// run from the chart directory.
+func template(crd *v1alpha1.Application, skipRenderKey string, ignoreValueFile string, maskRandomValues bool) ([]byte, Rendering, error) {
+	r, err := prepareRelease(crd, skipRenderKey, ignoreValueFile)
+	if err != nil {
+		return nil, Rendering{}, err
+	}
+	manifest, chartCallsRandomFunctions, err := r.render()
+	if err != nil {
+		return nil, Rendering{}, err
+	}
+	if !maskRandomValues || !(chartCallsRandomFunctions || valuesCallRandomFunctions(r.vals)) {
+		return manifest, Rendering{}, nil
+	}
+
+	second, _, err := r.render()
+	if err != nil {
+		return nil, Rendering{}, err
+	}
+	manifest, masked, err := randomvalues.Mask(manifest, second, notRendered)
+	if err != nil {
+		return nil, Rendering{}, fmt.Errorf("error masking random values in %s: %w", crd.ObjectMeta.Name, err)
+	}
+	if len(masked) > 0 {
+		log.Printf("Masked random values in %s: %s", crd.ObjectMeta.Name, strings.Join(masked, ", "))
+	}
+	return manifest, Rendering{Twice: true}, nil
 }
 
 func Read(inputCRD string) ([]*v1alpha1.Application, error) {

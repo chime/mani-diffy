@@ -50,7 +50,7 @@ type PostRenderer func(string) error
 // concurrently.
 type Walker struct {
 	// HelmTemplate is a function that can render an Argo application using Helm
-	HelmTemplate Renderer
+	HelmTemplate func(*v1alpha1.Application, string) (helm.Rendering, error)
 
 	// CopySource is a function that can copy an Argo application to a directory
 	CopySource Renderer
@@ -87,6 +87,9 @@ type Root struct {
 type Stats struct {
 	// Rendered is how many applications were rendered.
 	Rendered int
+	// RenderedTwice is how many of the rendered applications were rendered
+	// twice, to mask their random values.
+	RenderedTwice int
 	// Unchanged is how many applications weren't rendered, since they didn't
 	// change since the last run.
 	Unchanged int
@@ -158,6 +161,9 @@ type outcome int
 
 const (
 	rendered outcome = iota + 1
+	// renderedTwice is when the application was rendered, and its Helm chart
+	// was rendered twice, to mask its random values.
+	renderedTwice
 	// unchanged is when the application wasn't rendered, since it didn't
 	// change since the last run.
 	unchanged
@@ -165,6 +171,10 @@ const (
 	// Kustomize.
 	unsupported
 )
+
+func (o outcome) wasRendered() bool {
+	return o == rendered || o == renderedTwice
+}
 
 // result is the outcome of processing a job.
 type result struct {
@@ -271,7 +281,7 @@ func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.A
 				stats.count(r)
 				progress[i].Stats.count(r)
 			}
-			if r.err == nil && r.outcome == rendered {
+			if r.err == nil && r.outcome.wasRendered() {
 				r.err = r.job.root.Hashes.Add(r.job.app.ObjectMeta.Name, r.hash)
 			}
 			if r.err == nil {
@@ -312,6 +322,9 @@ func (s *Stats) count(r result) {
 	switch r.outcome {
 	case rendered:
 		s.Rendered++
+	case renderedTwice:
+		s.Rendered++
+		s.RenderedTwice++
 	case unchanged:
 		s.Unchanged++
 	case unsupported:
@@ -411,7 +424,8 @@ func (w *Walker) process(j job, maxDepth int) result {
 
 	if needsRender {
 		log.Printf("No match detected. Render: %s\n", j.app.ObjectMeta.Name)
-		if err := w.Render(j.app, path); err != nil {
+		rendering, err := w.Render(j.app, path)
+		if err != nil {
 			if errors.Is(err, kustomize.ErrNotSupported) {
 				r.outcome = unsupported
 			} else {
@@ -420,6 +434,9 @@ func (w *Walker) process(j job, maxDepth int) result {
 			return r
 		}
 		r.outcome = rendered
+		if rendering.Twice {
+			r.outcome = renderedTwice
+		}
 		r.hash = hash
 	} else {
 		r.outcome = unchanged
@@ -434,38 +451,42 @@ func (w *Walker) process(j job, maxDepth int) result {
 	return r
 }
 
-func (w *Walker) Render(application *v1alpha1.Application, output string) error {
+func (w *Walker) Render(application *v1alpha1.Application, output string) (helm.Rendering, error) {
 	log.Println("Render", application.ObjectMeta.Name)
 
 	var render Renderer
+	var rendering helm.Rendering
 
 	// Figure out which renderer to use
 	switch {
 	case application.Spec.Source.Helm != nil:
-		render = w.HelmTemplate
+		render = func(application *v1alpha1.Application, output string) (err error) {
+			rendering, err = w.HelmTemplate(application, output)
+			return err
+		}
 	case application.Spec.Source.Kustomize != nil:
 		log.Println("WARNING: kustomize not supported")
-		return kustomize.ErrNotSupported
+		return helm.Rendering{}, kustomize.ErrNotSupported
 	default:
 		render = w.CopySource
 	}
 
 	// Make sure the directory is empty before rendering.
 	if err := os.RemoveAll(output); err != nil {
-		return err
+		return helm.Rendering{}, err
 	}
 
 	// Render
 	if err := render(application, output); err != nil {
-		return err
+		return helm.Rendering{}, err
 	}
 
 	// Call the post renderer to do any post processing
 	if w.PostRender != nil {
 		if err := w.PostRender(output); err != nil {
-			return fmt.Errorf("post render failed: %w", err)
+			return helm.Rendering{}, fmt.Errorf("post render failed: %w", err)
 		}
 	}
 
-	return nil
+	return rendering, nil
 }
