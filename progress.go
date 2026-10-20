@@ -87,12 +87,17 @@ func longestName(roots []Root) int {
 
 // liveDisplay shows the progress of every root below the output, updating in
 // place, like `docker build` does for its steps. Once the walk is done, it
-// prints what was done with every root instead.
+// clears the display, and prints what was done with every root instead.
 type liveDisplay struct {
 	program *tea.Program
 	latest  *latestProgress
+	roots   []Root
+	out     io.Writer
 	done    chan struct{}
 }
+
+// clearingTime is long enough for the display to draw a frame.
+const clearingTime = 50 * time.Millisecond
 
 // latestProgress is the latest progress of every root. The walk records it
 // without waiting for the display, which shows a copy of it on every frame.
@@ -120,6 +125,8 @@ func newLiveDisplay(w io.Writer, roots []Root, options ...tea.ProgramOption) *li
 		// display, after the display restores the terminal.
 		program: tea.NewProgram(model, append([]tea.ProgramOption{tea.WithOutput(w), tea.WithInput(nil)}, options...)...),
 		latest:  model.latest,
+		roots:   roots,
+		out:     w,
 		done:    make(chan struct{}),
 	}
 	go func() {
@@ -138,6 +145,10 @@ func (d *liveDisplay) update(i int, _ Root, progress RootProgress) {
 func (d *liveDisplay) wait() {
 	d.program.Send(walkDoneMsg{})
 	<-d.done
+	nameWidth := longestName(d.roots)
+	for i, progress := range d.latest.copy() {
+		fmt.Fprintln(d.out, rootLine("", d.roots[i].Name, nameWidth, progress, true))
+	}
 }
 
 // walkDoneMsg tells the display that the walk is done.
@@ -186,13 +197,11 @@ func (m progressModel) Init() tea.Cmd {
 func (m progressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case walkDoneMsg:
-		m.copyLatest()
-		lines := make([]string, len(m.roots))
-		for i, progress := range m.progress {
-			lines[i] = rootLine("", m.roots[i].Name, m.nameWidth, progress, true)
-		}
+		// The display is cleared on the next frame, after which the program
+		// quits, and the roots are printed once it did. Quitting right away
+		// would leave the last frame on the screen.
 		m.done = true
-		return m, tea.Sequence(tea.Println(strings.Join(lines, "\n")), tea.Quit)
+		return m, tea.Tick(clearingTime, func(time.Time) tea.Msg { return tea.Quit() })
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case spinner.TickMsg:
