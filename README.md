@@ -52,6 +52,12 @@ roots:
 
 Flags override the config file's settings: `-hash-store`, `-ignore-suffix`, `-skip-render-key`, and `-ignore-value-file` replace the setting of the same name, and `-root` or `-output` render only that root instead of the config file's roots.
 
+To render only some of the roots, name them with `-only`:
+
+```
+mani-diffy -only use1-stable,use1-prod
+```
+
 ## Post Renderers
 
 `mani-diffy` also supports something called a "post renderer". This is a command that will be called immediately after an Application is rendered. This can be used to run linting, or alter the output of the generated manifest.

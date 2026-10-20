@@ -157,3 +157,41 @@ func TestOptionsRejectInvalidConfigFile(t *testing.T) {
 		})
 	}
 }
+
+func TestOptionsOnlySelectsConfigRoots(t *testing.T) {
+	for _, tt := range []struct {
+		only string
+		want []rootOptions
+	}{
+		{only: "use1-prod", want: configRoots[1:]},
+		{only: "use1-prod,use1-stable", want: configRoots},
+		{only: "use1-stable, use1-prod", want: configRoots},
+	} {
+		t.Run(tt.only, func(t *testing.T) {
+			opts, err := loadOptions(t, configWithEverything, "-only", tt.only)
+
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(opts.roots, tt.want) {
+				t.Errorf("Expected roots %v, got %v", tt.want, opts.roots)
+			}
+		})
+	}
+}
+
+func TestOptionsOnlyRejectsUnknownRoots(t *testing.T) {
+	_, err := loadOptions(t, configWithEverything, "-only", "use1-stable,use1-dev")
+
+	if err == nil || !strings.Contains(err.Error(), "-only: no root named use1-dev in .mani-diffy.yaml, which has use1-stable, use1-prod") {
+		t.Errorf("Expected an error about use1-dev, got: %v", err)
+	}
+}
+
+func TestOptionsOnlyRejectsRootFlags(t *testing.T) {
+	_, err := loadOptions(t, configWithEverything, "-only", "use1-stable", "-root", "apps")
+
+	if err == nil || !strings.Contains(err.Error(), "-only selects roots of the config file, which -root and -output replace") {
+		t.Errorf("Expected an error about -root, got: %v", err)
+	}
+}
