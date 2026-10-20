@@ -88,6 +88,16 @@ var settings = cli.New()
 // a chart do not download its dependencies concurrently.
 var dependencyUpdates sync.Mutex
 
+// chartFiles caches the files of each chart directory by absolute path, so
+// that the applications rendering the same chart read it from disk once per
+// run.
+var chartFiles sync.Map
+
+// pathHashes caches the hash of each chart directory and value file by
+// absolute path, so that the applications using them read them from disk once
+// per run.
+var pathHashes sync.Map
+
 func VerifyRenderDir(autoGenerationPath string) error {
 	if _, err := os.Stat(autoGenerationPath); errors.Is(err, os.ErrNotExist) {
 		if err := CreateDir(autoGenerationPath); err != nil {
@@ -151,7 +161,7 @@ func createTempFile(payload string) (string, error) {
 
 // loadChart loads a chart, installing its dependencies first if they are missing.
 func loadChart(chartPath string) (*chart.Chart, error) {
-	c, err := loader.Load(chartPath)
+	c, err := loadCachedChart(chartPath)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +176,7 @@ func loadChart(chartPath string) (*chart.Chart, error) {
 	defer dependencyUpdates.Unlock()
 
 	// Another application using this chart may have installed them already.
-	if c, err = loader.Load(chartPath); err != nil {
+	if c, err = readChart(chartPath); err != nil {
 		return nil, err
 	}
 	if !missingDependencies(c) {
@@ -175,7 +185,52 @@ func loadChart(chartPath string) (*chart.Chart, error) {
 	if err := installDependencies(chartPath); err != nil {
 		return nil, err
 	}
-	return loader.Load(chartPath)
+	return readChart(chartPath)
+}
+
+// loadCachedChart loads a chart from its files as last read from disk, reading
+// them if they haven't been. Each call returns a new chart, since rendering
+// modifies it.
+func loadCachedChart(chartPath string) (*chart.Chart, error) {
+	key, err := filepath.Abs(chartPath)
+	if err != nil {
+		return nil, err
+	}
+	read, _ := chartFiles.LoadOrStore(key, sync.OnceValues(func() ([]*loader.BufferedFile, error) {
+		return readChartFiles(chartPath)
+	}))
+	files, err := read.(func() ([]*loader.BufferedFile, error))()
+	if err != nil {
+		return nil, err
+	}
+	return loader.LoadFiles(files)
+}
+
+// readChart loads a chart from disk, and caches its files for loadCachedChart.
+func readChart(chartPath string) (*chart.Chart, error) {
+	key, err := filepath.Abs(chartPath)
+	if err != nil {
+		return nil, err
+	}
+	files, err := readChartFiles(chartPath)
+	if err != nil {
+		return nil, err
+	}
+	chartFiles.Store(key, func() ([]*loader.BufferedFile, error) { return files, nil })
+	return loader.LoadFiles(files)
+}
+
+// readChartFiles reads the files of a chart from disk.
+func readChartFiles(chartPath string) ([]*loader.BufferedFile, error) {
+	c, err := loader.Load(chartPath)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]*loader.BufferedFile, len(c.Raw))
+	for i, f := range c.Raw {
+		files[i] = &loader.BufferedFile{Name: f.Name, Data: f.Data}
+	}
+	return files, nil
 }
 
 func checkIfInstallable(c *chart.Chart) error {
@@ -364,7 +419,20 @@ func GenerateHash(crd *v1alpha1.Application, ignoreValueFile string) (string, er
 	return hex.EncodeToString(finalHash.Sum(nil)), nil
 }
 
+// generalHashFunction returns the hash of a file, or of the files in a
+// directory, as read from disk the first time it is asked for in a run.
 func generalHashFunction(dirFilepath string) ([]byte, error) {
+	key, err := filepath.Abs(dirFilepath)
+	if err != nil {
+		return nil, err
+	}
+	hash, _ := pathHashes.LoadOrStore(key, sync.OnceValues(func() ([]byte, error) {
+		return hashPath(dirFilepath)
+	}))
+	return hash.(func() ([]byte, error))()
+}
+
+func hashPath(dirFilepath string) ([]byte, error) {
 	m, err := sha256Dir(dirFilepath)
 	if err != nil {
 		log.Println(err)
