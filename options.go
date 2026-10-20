@@ -36,6 +36,9 @@ type options struct {
 	// only are the names of the config file's roots to render, or empty to
 	// render all of them.
 	only string
+	// listRoots is whether to print the names of the roots instead of
+	// rendering them.
+	listRoots bool
 	// flags are the names of the flags that were given.
 	flags map[string]bool
 }
@@ -64,6 +67,7 @@ func parseOptions(args []string) (*options, error) {
 	parallelism := flags.Int("parallelism", runtime.NumCPU(), "Maximum number of applications rendered at once.")
 	configFile := flags.String("config", defaultConfigFile, "Config file with the roots to render and settings for the flags that aren't given, relative to the workdir. Giving -root or -output renders only that root instead of the config file's roots.")
 	only := flags.String("only", "", "Comma separated names of the config file's roots to render, instead of all of them.")
+	listRoots := flags.Bool("list-roots", false, "Print the names of the config file's roots that would be rendered, one per line, instead of rendering them.")
 	if err := flags.Parse(args); err != nil {
 		return nil, err
 	}
@@ -83,6 +87,7 @@ func parseOptions(args []string) (*options, error) {
 		parallelism:     *parallelism,
 		configFile:      *configFile,
 		only:            *only,
+		listRoots:       *listRoots,
 		flags:           given,
 	}, nil
 }
@@ -197,4 +202,14 @@ func parseConfig(content []byte) (*config, error) {
 		outputs[output] = i
 	}
 	return c, nil
+}
+
+// writeRootNames writes the names of the roots, one per line. Roots given by
+// flags have no name.
+func writeRootNames(w io.Writer, roots []rootOptions) {
+	for _, r := range roots {
+		if r.name != "" {
+			fmt.Fprintln(w, r.name)
+		}
+	}
 }

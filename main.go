@@ -65,6 +65,11 @@ func main() {
 		log.Fatal(err)
 	}
 
+	if opts.listRoots {
+		writeRootNames(os.Stdout, opts.roots)
+		return
+	}
+
 	start := time.Now()
 	roots := make([]Root, 0, len(opts.roots))
 	for _, root := range opts.roots {

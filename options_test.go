@@ -195,3 +195,34 @@ func TestOptionsOnlyRejectsRootFlags(t *testing.T) {
 		t.Errorf("Expected an error about -root, got: %v", err)
 	}
 }
+
+func TestOptionsListRootNames(t *testing.T) {
+	opts, err := loadOptions(t, configWithEverything, "-list-roots", "-only", "use1-prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+
+	writeRootNames(&out, opts.roots)
+
+	if !opts.listRoots {
+		t.Error("Expected -list-roots to be set")
+	}
+	if got := out.String(); got != "use1-prod\n" {
+		t.Errorf("Expected the selected root's name, got %q", got)
+	}
+}
+
+func TestOptionsListNoNamesWithoutConfigRoots(t *testing.T) {
+	opts, err := loadOptions(t, "", "-list-roots")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+
+	writeRootNames(&out, opts.roots)
+
+	if got := out.String(); got != "" {
+		t.Errorf("Expected no names for the unnamed root of the flags, got %q", got)
+	}
+}

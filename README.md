@@ -58,6 +58,8 @@ To render only some of the roots, name them with `-only`:
 mani-diffy -only use1-stable,use1-prod
 ```
 
+`-list-roots` prints the names of the roots that would be rendered, one per line, for example for shell completion.
+
 ## Post Renderers
 
 `mani-diffy` also supports something called a "post renderer". This is a command that will be called immediately after an Application is rendered. This can be used to run linting, or alter the output of the generated manifest.
