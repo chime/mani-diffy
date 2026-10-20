@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"log"
@@ -63,39 +64,60 @@ type Walker struct {
 	// Parallelism is the maximum number of Argo applications processed at once.
 	Parallelism int
 
+	// Progress is called with the index of a root in the roots given to Walk
+	// and its progress: for every root before any Argo application is
+	// processed, then for a root whenever one of its applications is
+	// processed.
+	Progress func(i int, root Root, progress RootProgress)
+
 	ignoreSuffix string
 }
 
 // Root is a directory tree of Argo applications to render into an output
 // directory, with the hashes of the applications last rendered there.
 type Root struct {
+	// Name identifies the root in what is reported about it.
+	Name   string
 	Input  string
 	Output string
 	Hashes HashStore
 }
 
+// Stats count what a walk did with the Argo applications it found.
+type Stats struct {
+	// Rendered is how many applications were rendered.
+	Rendered int
+	// Unchanged is how many applications weren't rendered, since they didn't
+	// change since the last run.
+	Unchanged int
+	// Unsupported is how many applications weren't rendered, since they use
+	// Kustomize, which isn't supported.
+	Unsupported int
+}
+
 // Walk walks directory trees looking for Argo applications and renders them.
 // The applications of all roots are rendered by the same workers.
-func (w *Walker) Walk(roots []Root, maxDepth int) error {
+func (w *Walker) Walk(roots []Root, maxDepth int) (Stats, error) {
 	visited := make(map[string]*v1alpha1.Application)
 
-	if err := w.walk(roots, maxDepth, visited); err != nil {
-		return err
+	stats, err := w.walk(roots, maxDepth, visited)
+	if err != nil {
+		return stats, err
 	}
 
 	for _, root := range roots {
 		if err := root.Hashes.Save(); err != nil {
-			return err
+			return stats, err
 		}
 
 		if maxDepth == InfiniteDepth {
 			if err := pruneUnvisited(visited, root.Output); err != nil {
-				return err
+				return stats, err
 			}
 		}
 	}
 
-	return nil
+	return stats, nil
 }
 
 func pruneUnvisited(visited map[string]*v1alpha1.Application, outputPath string) error {
@@ -133,21 +155,39 @@ type job struct {
 type result struct {
 	job      job
 	rendered bool
-	hash     string
-	children []*v1alpha1.Application
-	err      error
+	// unchanged is whether the application wasn't rendered, since it didn't
+	// change since the last run.
+	unchanged bool
+	// unsupported is whether the application wasn't rendered, since it uses
+	// Kustomize.
+	unsupported bool
+	hash        string
+	children    []*v1alpha1.Application
+	err         error
 }
 
 // walk renders the Argo applications found in the roots' inputs and,
 // recursively, the Argo applications they render. Up to Parallelism workers
 // process applications while this goroutine hands out jobs and collects
 // results. Only this goroutine reads or writes visited and the roots' hashes.
-func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.Application) error {
+func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.Application) (Stats, error) {
+	var stats Stats
+	progress := make([]RootProgress, len(roots))
+	index := make(map[*Root]int, len(roots))
+	for i := range roots {
+		index[&roots[i]] = i
+	}
+	report := func(i int) {
+		if progress[i].Outstanding == 0 {
+			progress[i].Finished = true
+		}
+		w.Progress(i, roots[i], progress[i])
+	}
 	rootApps := make([][]*v1alpha1.Application, len(roots))
 	for i, root := range roots {
 		apps, err := w.findApplications(root.Input)
 		if err != nil {
-			return err
+			return stats, err
 		}
 		rootApps[i] = apps
 	}
@@ -181,6 +221,7 @@ func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.A
 				return err
 			}
 			pending = append(pending, job{app: app, root: root, depth: depth, storedHash: hash})
+			progress[index[root]].Outstanding++
 		}
 		return nil
 	}
@@ -191,6 +232,11 @@ func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.A
 	for i := range roots {
 		if firstErr = enqueue(rootApps[i], &roots[i], 0); firstErr != nil {
 			break
+		}
+	}
+	if firstErr == nil {
+		for i := range roots {
+			report(i)
 		}
 	}
 	busy := 0
@@ -208,6 +254,14 @@ func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.A
 			busy++
 		case r := <-results:
 			busy--
+			if r.err != nil {
+				r.err = fmt.Errorf("%s: application %s: %w", cmp.Or(r.job.root.Name, r.job.root.Output), r.job.app.ObjectMeta.Name, r.err)
+			}
+			i := index[r.job.root]
+			if r.err == nil {
+				stats.count(r)
+				progress[i].Stats.count(r)
+			}
 			if r.err == nil && r.rendered {
 				r.err = r.job.root.Hashes.Add(r.job.app.ObjectMeta.Name, r.hash)
 			}
@@ -217,10 +271,43 @@ func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.A
 			if firstErr == nil {
 				firstErr = r.err
 			}
+			progress[i].Outstanding--
+			if r.err != nil {
+				progress[i].Failed = true
+			}
+			// After the first error, only failures are reported.
+			if firstErr == nil || r.err != nil {
+				report(i)
+			}
 		}
 	}
 
-	return firstErr
+	return stats, firstErr
+}
+
+// RootProgress is how far a walk is with the Argo applications of a root.
+type RootProgress struct {
+	// Stats count what the walk did with the applications processed so far.
+	Stats
+	// Outstanding is how many of the applications found so far are still to
+	// be processed, or in progress.
+	Outstanding int
+	// Finished is whether all of the applications are processed.
+	Finished bool
+	// Failed is whether processing one of the applications failed.
+	Failed bool
+}
+
+// count counts what processing an application did with it.
+func (s *Stats) count(r result) {
+	switch {
+	case r.rendered:
+		s.Rendered++
+	case r.unchanged:
+		s.Unchanged++
+	case r.unsupported:
+		s.Unsupported++
+	}
 }
 
 // visit records that an Argo application was found. It returns false when the
@@ -283,7 +370,9 @@ func (w *Walker) process(j job, maxDepth int) result {
 	// COMPARE HASHES HERE. STEP INTO RENDER IF NO MATCH
 	hash, err := w.GenerateHash(j.app)
 	if err != nil {
-		if !errors.Is(err, kustomize.ErrNotSupported) {
+		if errors.Is(err, kustomize.ErrNotSupported) {
+			r.unsupported = true
+		} else {
 			r.err = err
 		}
 		return r
@@ -314,13 +403,17 @@ func (w *Walker) process(j job, maxDepth int) result {
 	if needsRender {
 		log.Printf("No match detected. Render: %s\n", j.app.ObjectMeta.Name)
 		if err := w.Render(j.app, path); err != nil {
-			if !errors.Is(err, kustomize.ErrNotSupported) {
+			if errors.Is(err, kustomize.ErrNotSupported) {
+				r.unsupported = true
+			} else {
 				r.err = err
 			}
 			return r
 		}
 		r.rendered = true
 		r.hash = hash
+	} else {
+		r.unchanged = true
 	}
 
 	// If we've reached the max depth, stop walking

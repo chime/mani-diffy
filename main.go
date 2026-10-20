@@ -1,16 +1,20 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 
 	"path/filepath"
 	"time"
 
+	"github.com/charmbracelet/colorprofile"
 	"github.com/chime/mani-diffy/pkg/helm"
 
 	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
@@ -40,6 +44,7 @@ func newWalker(skipRenderKey, ignoreValueFile, ignoreSuffix string, parallelism 
 		GenerateHash: func(application *v1alpha1.Application) (string, error) {
 			return helm.GenerateHash(application, ignoreValueFile)
 		},
+		Progress:     func(int, Root, RootProgress) {},
 		Parallelism:  parallelism,
 		ignoreSuffix: ignoreSuffix,
 	}
@@ -55,14 +60,21 @@ func main() {
 		os.Exit(2)
 	}
 
+	// The progress of every application goes to the standard logger, like
+	// Helm's warnings, and is only printed with -v. The summary and errors go
+	// to output, and are always printed.
+	if !opts.verbose {
+		log.SetOutput(io.Discard)
+	}
+
 	// Runs the command in the specified directory
 	err = os.Chdir(opts.workdir)
 	if err != nil {
-		log.Fatal("Could not set workdir: ", err)
+		output.Fatal("Could not set workdir: ", err)
 	}
 
 	if err := opts.loadConfig(); err != nil {
-		log.Fatal(err)
+		output.Fatal(err)
 	}
 
 	if opts.listRoots {
@@ -74,14 +86,14 @@ func main() {
 	roots := make([]Root, 0, len(opts.roots))
 	for _, root := range opts.roots {
 		if err := helm.VerifyRenderDir(root.output); err != nil {
-			log.Fatal(err)
+			output.Fatal(err)
 		}
 
 		h, err := getHashStore(opts.hashStore, opts.hashStrategy, root.output)
 		if err != nil {
-			log.Fatal(err)
+			output.Fatal(err)
 		}
-		roots = append(roots, Root{Input: root.root, Output: root.output, Hashes: h})
+		roots = append(roots, Root{Name: cmp.Or(root.name, root.output), Input: root.root, Output: root.output, Hashes: h})
 	}
 
 	w := newWalker(opts.skipRenderKey, opts.ignoreValueFile, opts.ignoreSuffix, opts.parallelism)
@@ -90,10 +102,36 @@ func main() {
 		w.PostRender = PostRender(opts.postRenderer)
 	}
 
-	if err := w.Walk(roots, opts.maxDepth); err != nil {
-		log.Fatal(err)
+	display := newProgressDisplay(os.Stderr, roots, opts.verbose)
+	w.Progress = display.update
+
+	stats, err := w.Walk(roots, opts.maxDepth)
+	display.wait()
+	if err != nil {
+		output.Fatal(err)
 	}
-	log.Printf("mani-diffy took %v to run", time.Since(start))
+	output.Println(summary(stats, time.Since(start)))
+}
+
+// output prints what is always printed: the summary of a run, warnings, and
+// errors, with colors on a terminal, and otherwise only with CLICOLOR_FORCE.
+var output = log.New(colorprofile.NewWriter(os.Stderr, os.Environ()), "", 0)
+
+// summary describes what a run did with the Argo applications it found, and
+// how long it took.
+func summary(stats Stats, took time.Duration) string {
+	return fmt.Sprintf("Applications: %s, in %v", describe(stats), took.Round(time.Millisecond))
+}
+
+// describe describes what was done with Argo applications.
+func describe(stats Stats) string {
+	var s strings.Builder
+	fmt.Fprintf(&s, "%d rendered", stats.Rendered)
+	fmt.Fprintf(&s, ", %d unchanged", stats.Unchanged)
+	if stats.Unsupported > 0 {
+		fmt.Fprintf(&s, ", %d skipped since Kustomize isn't supported", stats.Unsupported)
+	}
+	return s.String()
 }
 
 var hashStores = map[string]func(string, string) (HashStore, error){

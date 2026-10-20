@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // loadOptions parses the arguments and reads the config file the way main does,
@@ -224,5 +225,34 @@ func TestOptionsListNoNamesWithoutConfigRoots(t *testing.T) {
 
 	if got := out.String(); got != "" {
 		t.Errorf("Expected no names for the unnamed root of the flags, got %q", got)
+	}
+}
+
+func TestSummary(t *testing.T) {
+	for _, tt := range []struct {
+		stats Stats
+		want  string
+	}{
+		{Stats{Rendered: 3, Unchanged: 1}, "Applications: 3 rendered, 1 unchanged, in 23.012s"},
+		{Stats{Rendered: 3, Unsupported: 2}, "Applications: 3 rendered, 0 unchanged, 2 skipped since Kustomize isn't supported, in 23.012s"},
+	} {
+		if got := summary(tt.stats, 23012345*time.Microsecond); got != tt.want {
+			t.Errorf("Expected %q, got %q", tt.want, got)
+		}
+	}
+}
+
+func TestOptionsVerbose(t *testing.T) {
+	quiet, err := loadOptions(t, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verbose, err := loadOptions(t, "", "-v")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if quiet.verbose || !verbose.verbose {
+		t.Errorf("Expected -v to make the output verbose, got %v without and %v with it", quiet.verbose, verbose.verbose)
 	}
 }

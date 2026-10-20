@@ -39,6 +39,9 @@ type options struct {
 	// listRoots is whether to print the names of the roots instead of
 	// rendering them.
 	listRoots bool
+	// verbose is whether to print the progress of every application instead
+	// of only a summary.
+	verbose bool
 	// flags are the names of the flags that were given.
 	flags map[string]bool
 }
@@ -67,6 +70,7 @@ func parseOptions(args []string) (*options, error) {
 	parallelism := flags.Int("parallelism", runtime.NumCPU(), "Maximum number of applications rendered at once.")
 	configFile := flags.String("config", defaultConfigFile, "Config file with the roots to render and settings for the flags that aren't given, relative to the workdir. Giving -root or -output renders only that root instead of the config file's roots.")
 	only := flags.String("only", "", "Comma separated names of the config file's roots to render, instead of all of them.")
+	verbose := flags.Bool("v", false, "Print the progress of every application, and Helm's warnings, instead of only a summary.")
 	listRoots := flags.Bool("list-roots", false, "Print the names of the config file's roots that would be rendered, one per line, instead of rendering them.")
 	if err := flags.Parse(args); err != nil {
 		return nil, err
@@ -88,6 +92,7 @@ func parseOptions(args []string) (*options, error) {
 		configFile:      *configFile,
 		only:            *only,
 		listRoots:       *listRoots,
+		verbose:         *verbose,
 		flags:           given,
 	}, nil
 }
