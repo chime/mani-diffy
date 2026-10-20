@@ -274,7 +274,11 @@ func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.A
 				firstErr = r.err
 			}
 			progress[i].Outstanding--
-			if firstErr == nil {
+			if r.err != nil {
+				progress[i].Failed = true
+			}
+			// After the first error, only failures are reported.
+			if firstErr == nil || r.err != nil {
 				report(i)
 			}
 		}
@@ -292,6 +296,8 @@ type RootProgress struct {
 	Outstanding int
 	// Finished is whether all of the applications are processed.
 	Finished bool
+	// Failed is whether processing one of the applications failed.
+	Failed bool
 }
 
 // count counts what processing an application did with it.

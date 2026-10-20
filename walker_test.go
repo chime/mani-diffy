@@ -464,3 +464,22 @@ func TestWalkNamesTheRootInErrors(t *testing.T) {
 		t.Errorf("Expected the error to name the root and the application, got: %v", err)
 	}
 }
+
+func TestWalkReportsTheRootThatFailed(t *testing.T) {
+	newWorkspace(t)
+	writeFile(t, filepath.Join("bootstrap-a", "apps.yaml"), application(t, "app", "app", ""))
+	writeFile(t, filepath.Join("bootstrap-b", "apps.yaml"), application(t, "bad", "broken", ""))
+
+	reports, err := walkRootsReporting(t, 2, "", Root{Name: "a", Input: "bootstrap-a", Output: "output-a"}, Root{Name: "b", Input: "bootstrap-b", Output: "output-b"})
+
+	if err == nil {
+		t.Fatal("Expected the walk to fail")
+	}
+	failed := map[string]bool{}
+	for _, r := range reports {
+		failed[r.name] = failed[r.name] || r.progress.Failed
+	}
+	if !failed["b"] || failed["a"] {
+		t.Errorf("Expected only b to be reported failed, got %v", failed)
+	}
+}

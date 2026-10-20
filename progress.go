@@ -41,22 +41,40 @@ var (
 	nameStyle    = lipgloss.NewStyle().Bold(true)
 	spinnerStyle = lipgloss.NewStyle().Foreground(lipgloss.Cyan)
 	finishedMark = lipgloss.NewStyle().Foreground(lipgloss.Green).Render("✓")
-	stoppedMark  = lipgloss.NewStyle().Foreground(lipgloss.Red).Render("✗")
+	failedMark   = lipgloss.NewStyle().Foreground(lipgloss.Red).Render("✗")
+	canceledMark = lipgloss.NewStyle().Faint(true).Render("-")
 )
 
-// rootLine describes a root's progress on a line, after mark, with the
-// root's name padded to the width of the longest name.
-func rootLine(mark, name string, nameWidth int, progress RootProgress) string {
-	return fmt.Sprintf("%s %s  %s", mark, nameStyle.Render(fmt.Sprintf("%-*s", nameWidth, name)), describeProgress(progress))
+// rootLine describes a root's progress on a line, with the root's name padded
+// to the width of the longest name. running marks a root that is still
+// running. Once the walk is done, the applications of the roots still running
+// were canceled.
+func rootLine(running, name string, nameWidth int, progress RootProgress, walkDone bool) string {
+	mark := running
+	switch {
+	case progress.Failed:
+		mark = failedMark
+	case progress.Finished:
+		mark = finishedMark
+	case walkDone:
+		mark = canceledMark
+	}
+	return fmt.Sprintf("%s %s  %s", mark, nameStyle.Render(fmt.Sprintf("%-*s", nameWidth, name)), describeProgress(progress, walkDone))
 }
 
 // describeProgress describes how far a walk is with the applications of a
 // root.
-func describeProgress(progress RootProgress) string {
-	if progress.Finished {
+func describeProgress(progress RootProgress, walkDone bool) string {
+	switch {
+	case progress.Failed:
+		return describe(progress.Stats) + ", failed"
+	case progress.Finished:
 		return describe(progress.Stats)
+	case walkDone:
+		return fmt.Sprintf("%s, %d canceled", describe(progress.Stats), progress.Outstanding)
+	default:
+		return fmt.Sprintf("%s, %d to go", describe(progress.Stats), progress.Outstanding)
 	}
-	return fmt.Sprintf("%d rendered, %d unchanged, %d to go", progress.Rendered, progress.Unchanged, progress.Outstanding)
 }
 
 func longestName(roots []Root) int {
@@ -169,14 +187,9 @@ func (m progressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case walkDoneMsg:
 		m.copyLatest()
-		// The roots of a walk that failed don't all finish.
 		lines := make([]string, len(m.roots))
 		for i, progress := range m.progress {
-			mark := finishedMark
-			if !progress.Finished {
-				mark = stoppedMark
-			}
-			lines[i] = rootLine(mark, m.roots[i].Name, m.nameWidth, progress)
+			lines[i] = rootLine("", m.roots[i].Name, m.nameWidth, progress, true)
 		}
 		m.done = true
 		return m, tea.Sequence(tea.Println(strings.Join(lines, "\n")), tea.Quit)
@@ -249,27 +262,25 @@ func (m progressModel) View() tea.View {
 // rootLine describes the progress of the root at index i, with a spinner while
 // it runs.
 func (m progressModel) rootLine(i int) string {
-	mark := m.spinner.View()
-	if m.progress[i].Finished {
-		mark = finishedMark
-	}
-	return rootLine(mark, m.roots[i].Name, m.nameWidth, m.progress[i])
+	return rootLine(m.spinner.View(), m.roots[i].Name, m.nameWidth, m.progress[i], false)
 }
 
-// finishedLines print a line for each root when it finishes, when there are
-// several roots. With one root, the summary describes it.
+// finishedLines print a line for each root when it finishes or fails, when
+// there are several roots. With one root, the summary describes it.
 type finishedLines struct {
 	several   bool
 	nameWidth int
+	printed   []bool
 }
 
 func newFinishedLines(roots []Root) *finishedLines {
-	return &finishedLines{several: len(roots) > 1, nameWidth: longestName(roots)}
+	return &finishedLines{several: len(roots) > 1, nameWidth: longestName(roots), printed: make([]bool, len(roots))}
 }
 
-func (l *finishedLines) update(_ int, root Root, progress RootProgress) {
-	if l.several && progress.Finished {
-		output.Println(rootLine(finishedMark, root.Name, l.nameWidth, progress))
+func (l *finishedLines) update(i int, root Root, progress RootProgress) {
+	if l.several && !l.printed[i] && (progress.Finished || progress.Failed) {
+		l.printed[i] = true
+		output.Println(rootLine("", root.Name, l.nameWidth, progress, false))
 	}
 }
 

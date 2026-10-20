@@ -102,7 +102,7 @@ func TestLiveDisplayPrintsRootsThatDidNotFinish(t *testing.T) {
 	display.update(0, displayRoots[0], RootProgress{Stats: Stats{Rendered: 1}, Outstanding: 2})
 	display.wait()
 
-	if want := "✗ use1-stable  1 rendered, 0 unchanged, 2 to go"; !strings.Contains(ansi.Strip(out.String()), want) {
+	if want := "- use1-stable  1 rendered, 0 unchanged, 2 canceled"; !strings.Contains(ansi.Strip(out.String()), want) {
 		t.Errorf("Expected %q to be printed, got:\n%s", want, ansi.Strip(out.String()))
 	}
 }
@@ -142,5 +142,44 @@ func TestFinishedLinesPrintNothingForOneRoot(t *testing.T) {
 
 	if out.Len() != 0 {
 		t.Errorf("Expected nothing, since the summary describes the only root, got %q", out.String())
+	}
+}
+
+func TestLiveViewShowsTheRootThatFailed(t *testing.T) {
+	var model tea.Model = newProgressModel(displayRoots)
+
+	model = withProgress(t, model, 0, RootProgress{Stats: Stats{Rendered: 1}, Outstanding: 2, Failed: true})
+	lines := strings.Split(ansi.Strip(model.View().Content), "\n")
+
+	if want := "✗ use1-stable  1 rendered, 0 unchanged, failed"; lines[0] != want {
+		t.Errorf("Expected %q, got %q", want, lines[0])
+	}
+}
+
+func TestLiveDisplayPrintsTheRootThatFailed(t *testing.T) {
+	var out bytes.Buffer
+	display := newLiveDisplay(&out, displayRoots, tea.WithoutSignals(), tea.WithWindowSize(120, 40))
+
+	display.update(0, displayRoots[0], RootProgress{Stats: Stats{Rendered: 1}, Outstanding: 2, Failed: true})
+	display.update(1, displayRoots[1], RootProgress{Outstanding: 3})
+	display.wait()
+
+	want := "✗ use1-stable  1 rendered, 0 unchanged, failed\n" +
+		"- empty        0 rendered, 0 unchanged, 3 canceled"
+	if printed := strings.ReplaceAll(ansi.Strip(out.String()), "\r", ""); !strings.Contains(printed, want) {
+		t.Errorf("Expected %q to be printed, got:\n%s", want, printed)
+	}
+}
+
+func TestFinishedLinesPrintTheRootThatFailed(t *testing.T) {
+	out := captureOutput(t)
+	lines := newFinishedLines(displayRoots)
+
+	lines.update(0, displayRoots[0], RootProgress{Stats: Stats{Rendered: 1}, Outstanding: 2, Failed: true})
+	lines.update(0, displayRoots[0], RootProgress{Stats: Stats{Rendered: 1}, Outstanding: 1, Failed: true})
+	lines.wait()
+
+	if want := "✗ use1-stable  1 rendered, 0 unchanged, failed\n"; ansi.Strip(out.String()) != want {
+		t.Errorf("Expected %q once, got %q", want, ansi.Strip(out.String()))
 	}
 }
