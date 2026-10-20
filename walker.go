@@ -64,10 +64,10 @@ type Walker struct {
 	// Parallelism is the maximum number of Argo applications processed at once.
 	Parallelism int
 
-	// Progress, when set, is called with the index of a root in the roots
-	// given to Walk and its progress: for every root before any Argo
-	// application is processed, then for a root whenever one of its
-	// applications is processed.
+	// Progress is called with the index of a root in the roots given to Walk
+	// and its progress: for every root before any Argo application is
+	// processed, then for a root whenever one of its applications is
+	// processed.
 	Progress func(i int, root Root, progress RootProgress)
 
 	ignoreSuffix string
@@ -181,9 +181,7 @@ func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.A
 		if progress[i].Outstanding == 0 {
 			progress[i].Finished = true
 		}
-		if w.Progress != nil {
-			w.Progress(i, roots[i], progress[i])
-		}
+		w.Progress(i, roots[i], progress[i])
 	}
 	rootApps := make([][]*v1alpha1.Application, len(roots))
 	for i, root := range roots {

@@ -44,6 +44,7 @@ func newWalker(skipRenderKey, ignoreValueFile, ignoreSuffix string, parallelism 
 		GenerateHash: func(application *v1alpha1.Application) (string, error) {
 			return helm.GenerateHash(application, ignoreValueFile)
 		},
+		Progress:     func(int, Root, RootProgress) {},
 		Parallelism:  parallelism,
 		ignoreSuffix: ignoreSuffix,
 	}
