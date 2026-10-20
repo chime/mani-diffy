@@ -16,10 +16,6 @@ import (
 	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
 )
 
-func HelmTemplate(application *v1alpha1.Application, output string) error {
-	return helm.Run(application, output, "", "")
-}
-
 func CopySource(application *v1alpha1.Application, output string) error {
 	cmd := exec.Command("cp", "-r", application.Spec.Source.Path+"/.", output)
 	return cmd.Run()
