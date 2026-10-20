@@ -61,6 +61,10 @@ func main() {
 		log.Fatal("Could not set workdir: ", err)
 	}
 
+	if err := opts.loadConfig(); err != nil {
+		log.Fatal(err)
+	}
+
 	start := time.Now()
 	roots := make([]Root, 0, len(opts.roots))
 	for _, root := range opts.roots {

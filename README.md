@@ -32,6 +32,26 @@ In this screen recording a pull request is opened to make the following changes 
 https://github.com/chime/mani-diffy/assets/9005904/6c496996-f7af-4932-bf5d-01a5b57bbd99
 
 
+## Config file
+
+Instead of flags, the roots to render and their settings can be listed in `.mani-diffy.yaml` in the working directory, or in the file given by `-config`. With several roots, the applications of all of them are rendered by the same workers:
+
+```yaml
+hashStore: json
+ignoreSuffix: -console
+skipRenderKey: appTag
+ignoreValueFile: overrides/apptags
+roots:
+  - name: use1-stable
+    root: bootstrap/child-applications/us-east-1/stable
+    output: zz.auto-generated/root-use1-stable
+  - name: use1-prod
+    root: bootstrap/child-applications/us-east-1/prod
+    output: zz.auto-generated/root-use1-prod
+```
+
+Flags override the config file's settings: `-hash-store`, `-ignore-suffix`, `-skip-render-key`, and `-ignore-value-file` replace the setting of the same name, and `-root` or `-output` render only that root instead of the config file's roots.
+
 ## Post Renderers
 
 `mani-diffy` also supports something called a "post renderer". This is a command that will be called immediately after an Application is rendered. This can be used to run linting, or alter the output of the generated manifest.
