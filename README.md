@@ -32,6 +32,10 @@ In this screen recording a pull request is opened to make the following changes 
 https://github.com/chime/mani-diffy/assets/9005904/6c496996-f7af-4932-bf5d-01a5b57bbd99
 
 
+## Output
+
+By default, `mani-diffy` prints a summary of what it did: how many applications it rendered, and how many were unchanged since the last run. With `-v`, it also prints the progress of every application, and Helm's warnings.
+
 ## Config file
 
 Instead of flags, the roots to render and their settings can be listed in `.mani-diffy.yaml` in the working directory, or in the file given by `-config`. With several roots, the applications of all of them are rendered by the same workers:

@@ -74,28 +74,41 @@ type Root struct {
 	Hashes HashStore
 }
 
+// Stats count what a walk did with the Argo applications it found.
+type Stats struct {
+	// Rendered is how many applications were rendered.
+	Rendered int
+	// Unchanged is how many applications weren't rendered, since they didn't
+	// change since the last run.
+	Unchanged int
+	// Unsupported is how many applications weren't rendered, since they use
+	// Kustomize, which isn't supported.
+	Unsupported int
+}
+
 // Walk walks directory trees looking for Argo applications and renders them.
 // The applications of all roots are rendered by the same workers.
-func (w *Walker) Walk(roots []Root, maxDepth int) error {
+func (w *Walker) Walk(roots []Root, maxDepth int) (Stats, error) {
 	visited := make(map[string]*v1alpha1.Application)
 
-	if err := w.walk(roots, maxDepth, visited); err != nil {
-		return err
+	stats, err := w.walk(roots, maxDepth, visited)
+	if err != nil {
+		return stats, err
 	}
 
 	for _, root := range roots {
 		if err := root.Hashes.Save(); err != nil {
-			return err
+			return stats, err
 		}
 
 		if maxDepth == InfiniteDepth {
 			if err := pruneUnvisited(visited, root.Output); err != nil {
-				return err
+				return stats, err
 			}
 		}
 	}
 
-	return nil
+	return stats, nil
 }
 
 func pruneUnvisited(visited map[string]*v1alpha1.Application, outputPath string) error {
@@ -133,21 +146,28 @@ type job struct {
 type result struct {
 	job      job
 	rendered bool
-	hash     string
-	children []*v1alpha1.Application
-	err      error
+	// unchanged is whether the application wasn't rendered, since it didn't
+	// change since the last run.
+	unchanged bool
+	// unsupported is whether the application wasn't rendered, since it uses
+	// Kustomize.
+	unsupported bool
+	hash        string
+	children    []*v1alpha1.Application
+	err         error
 }
 
 // walk renders the Argo applications found in the roots' inputs and,
 // recursively, the Argo applications they render. Up to Parallelism workers
 // process applications while this goroutine hands out jobs and collects
 // results. Only this goroutine reads or writes visited and the roots' hashes.
-func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.Application) error {
+func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.Application) (Stats, error) {
+	var stats Stats
 	rootApps := make([][]*v1alpha1.Application, len(roots))
 	for i, root := range roots {
 		apps, err := w.findApplications(root.Input)
 		if err != nil {
-			return err
+			return stats, err
 		}
 		rootApps[i] = apps
 	}
@@ -211,6 +231,9 @@ func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.A
 			if r.err != nil {
 				r.err = fmt.Errorf("application %s: %w", r.job.app.ObjectMeta.Name, r.err)
 			}
+			if r.err == nil {
+				stats.count(r)
+			}
 			if r.err == nil && r.rendered {
 				r.err = r.job.root.Hashes.Add(r.job.app.ObjectMeta.Name, r.hash)
 			}
@@ -223,7 +246,19 @@ func (w *Walker) walk(roots []Root, maxDepth int, visited map[string]*v1alpha1.A
 		}
 	}
 
-	return firstErr
+	return stats, firstErr
+}
+
+// count counts what processing an application did with it.
+func (s *Stats) count(r result) {
+	switch {
+	case r.rendered:
+		s.Rendered++
+	case r.unchanged:
+		s.Unchanged++
+	case r.unsupported:
+		s.Unsupported++
+	}
 }
 
 // visit records that an Argo application was found. It returns false when the
@@ -286,7 +321,9 @@ func (w *Walker) process(j job, maxDepth int) result {
 	// COMPARE HASHES HERE. STEP INTO RENDER IF NO MATCH
 	hash, err := w.GenerateHash(j.app)
 	if err != nil {
-		if !errors.Is(err, kustomize.ErrNotSupported) {
+		if errors.Is(err, kustomize.ErrNotSupported) {
+			r.unsupported = true
+		} else {
 			r.err = err
 		}
 		return r
@@ -317,13 +354,17 @@ func (w *Walker) process(j job, maxDepth int) result {
 	if needsRender {
 		log.Printf("No match detected. Render: %s\n", j.app.ObjectMeta.Name)
 		if err := w.Render(j.app, path); err != nil {
-			if !errors.Is(err, kustomize.ErrNotSupported) {
+			if errors.Is(err, kustomize.ErrNotSupported) {
+				r.unsupported = true
+			} else {
 				r.err = err
 			}
 			return r
 		}
 		r.rendered = true
 		r.hash = hash
+	} else {
+		r.unchanged = true
 	}
 
 	// If we've reached the max depth, stop walking

@@ -4,9 +4,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 
 	"path/filepath"
 	"time"
@@ -55,14 +57,21 @@ func main() {
 		os.Exit(2)
 	}
 
+	// The progress of every application goes to the standard logger, like
+	// Helm's warnings, and is only printed with -v. The summary and errors go
+	// to output, and are always printed.
+	if !opts.verbose {
+		log.SetOutput(io.Discard)
+	}
+
 	// Runs the command in the specified directory
 	err = os.Chdir(opts.workdir)
 	if err != nil {
-		log.Fatal("Could not set workdir: ", err)
+		output.Fatal("Could not set workdir: ", err)
 	}
 
 	if err := opts.loadConfig(); err != nil {
-		log.Fatal(err)
+		output.Fatal(err)
 	}
 
 	if opts.listRoots {
@@ -74,12 +83,12 @@ func main() {
 	roots := make([]Root, 0, len(opts.roots))
 	for _, root := range opts.roots {
 		if err := helm.VerifyRenderDir(root.output); err != nil {
-			log.Fatal(err)
+			output.Fatal(err)
 		}
 
 		h, err := getHashStore(opts.hashStore, opts.hashStrategy, root.output)
 		if err != nil {
-			log.Fatal(err)
+			output.Fatal(err)
 		}
 		roots = append(roots, Root{Input: root.root, Output: root.output, Hashes: h})
 	}
@@ -90,10 +99,27 @@ func main() {
 		w.PostRender = PostRender(opts.postRenderer)
 	}
 
-	if err := w.Walk(roots, opts.maxDepth); err != nil {
-		log.Fatal(err)
+	stats, err := w.Walk(roots, opts.maxDepth)
+	if err != nil {
+		output.Fatal(err)
 	}
-	log.Printf("mani-diffy took %v to run", time.Since(start))
+	output.Println(summary(stats, time.Since(start)))
+}
+
+// output prints what is always printed: the summary of a run, warnings, and
+// errors.
+var output = log.New(os.Stderr, "", log.LstdFlags)
+
+// summary describes what a run did with the Argo applications it found.
+func summary(stats Stats, took time.Duration) string {
+	var s strings.Builder
+	fmt.Fprintf(&s, "Applications: %d rendered", stats.Rendered)
+	fmt.Fprintf(&s, ", %d unchanged", stats.Unchanged)
+	if stats.Unsupported > 0 {
+		fmt.Fprintf(&s, ", %d skipped since Kustomize isn't supported", stats.Unsupported)
+	}
+	fmt.Fprintf(&s, ", in %v", took.Round(time.Millisecond))
+	return s.String()
 }
 
 var hashStores = map[string]func(string, string) (HashStore, error){

@@ -64,6 +64,12 @@ func walk(t *testing.T, root, output string, parallelism int) error {
 
 func walkWithPostRenderer(t *testing.T, root, output string, parallelism int, postRenderer string) error {
 	t.Helper()
+	_, err := walkCounting(t, root, output, parallelism, postRenderer)
+	return err
+}
+
+func walkCounting(t *testing.T, root, output string, parallelism int, postRenderer string) (Stats, error) {
+	t.Helper()
 	if err := os.MkdirAll(output, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +305,8 @@ func walkRoots(t *testing.T, parallelism int, postRenderer string, roots ...Root
 	if postRenderer != "" {
 		w.PostRender = PostRender(postRenderer)
 	}
-	return w.Walk(roots, InfiniteDepth)
+	_, err := w.Walk(roots, InfiniteDepth)
+	return err
 }
 
 func TestWalkRendersEachRootIntoItsOwnOutput(t *testing.T) {
@@ -346,5 +353,38 @@ echo end >> "$RENDER_LOG"
 	}
 	if events := readLines(t, log); !slices.Equal(events, []string{"start", "start", "end", "end"}) {
 		t.Errorf("Expected the apps of both roots to render at the same time, got %q", events)
+	}
+}
+
+func TestWalkCountsWhatItDidWithApplications(t *testing.T) {
+	root, output := newWorkspace(t)
+	kustomize := v1alpha1.Application{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "argoproj.io/v1alpha1", Kind: "Application"},
+		ObjectMeta: metav1.ObjectMeta{Name: "kustomized"},
+		Spec: v1alpha1.ApplicationSpec{
+			Source: &v1alpha1.ApplicationSource{Path: "charts/app", Kustomize: &v1alpha1.ApplicationSourceKustomize{}},
+		},
+	}
+	content, err := json.Marshal(kustomize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, "apps.yaml"),
+		application(t, "plain", "app", "")+application(t, "other", "app", "name: other")+string(content)+"\n")
+
+	first, err := walkCounting(t, root, output, 2, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := walkCounting(t, root, output, 2, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if want := (Stats{Rendered: 2, Unsupported: 1}); first != want {
+		t.Errorf("Expected the first walk to count %+v, got %+v", want, first)
+	}
+	if want := (Stats{Unchanged: 2, Unsupported: 1}); second != want {
+		t.Errorf("Expected the second walk to count %+v, got %+v", want, second)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 
@@ -47,7 +46,7 @@ func NewJSONHashStore(path, strategy string) (*JSONHashStore, error) {
 			// If the file is invalid JSON, instead of erroring out,
 			// just start from scratch so a new valid file is
 			// generated.
-			log.Printf("Unable to parse hashes from %s: %v\n", path, err)
+			output.Printf("Unable to parse hashes from %s: %v\n", path, err)
 		}
 	}
 
