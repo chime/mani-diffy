@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -74,7 +75,7 @@ func walkWithPostRenderer(t *testing.T, root, output string, parallelism int, po
 	if postRenderer != "" {
 		w.PostRender = PostRender(postRenderer)
 	}
-	return w.Walk(root, output, InfiniteDepth, hashes)
+	return w.Walk([]Root{{Input: root, Output: output, Hashes: hashes}}, InfiniteDepth)
 }
 
 func isRendered(output, name string) bool {
@@ -277,5 +278,73 @@ touch "$1/post-rendered"
 	}
 	if _, err := os.Stat(filepath.Join(output, "bad")); !os.IsNotExist(err) {
 		t.Errorf("Expected bad not to be rendered, got: %v", err)
+	}
+}
+
+// walkRoots walks several roots, each with its own output and hash store, the
+// way a config file with several roots does.
+func walkRoots(t *testing.T, parallelism int, postRenderer string, roots ...Root) error {
+	t.Helper()
+	for i := range roots {
+		if err := os.MkdirAll(roots[i].Output, 0755); err != nil {
+			t.Fatal(err)
+		}
+		hashes, err := NewJSONHashStore(filepath.Join(roots[i].Output, "hashes.json"), HashStrategyReadWrite)
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots[i].Hashes = hashes
+	}
+	w := newWalker("", "", "-ignore", parallelism)
+	if postRenderer != "" {
+		w.PostRender = PostRender(postRenderer)
+	}
+	return w.Walk(roots, InfiniteDepth)
+}
+
+func TestWalkRendersEachRootIntoItsOwnOutput(t *testing.T) {
+	newWorkspace(t)
+	writeFile(t, filepath.Join("bootstrap-a", "apps.yaml"), application(t, "app", "app", "name: from-a"))
+	writeFile(t, filepath.Join("bootstrap-b", "apps.yaml"), application(t, "app", "app", "name: from-b"))
+	writeFile(t, filepath.Join("output-a", "stale", "manifest.yaml"), "kind: ConfigMap\n")
+
+	err := walkRoots(t, 2, "", Root{Input: "bootstrap-a", Output: "output-a"}, Root{Input: "bootstrap-b", Output: "output-b"})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	for output, name := range map[string]string{"output-a": "from-a", "output-b": "from-b"} {
+		manifest, err := os.ReadFile(filepath.Join(output, "app", "manifest.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(manifest), "name: "+name) {
+			t.Errorf("Expected %s to have the app rendered from its own root, got:\n%s", output, manifest)
+		}
+		if _, err := os.Stat(filepath.Join(output, "hashes.json")); err != nil {
+			t.Errorf("Expected %s to have its own hashes: %v", output, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join("output-a", "stale")); !os.IsNotExist(err) {
+		t.Errorf("Expected stale output to be pruned, got: %v", err)
+	}
+}
+
+func TestWalkRendersRootsInOneWorkerPool(t *testing.T) {
+	newWorkspace(t)
+	writeFile(t, filepath.Join("bootstrap-a", "apps.yaml"), application(t, "app-a", "app", ""))
+	writeFile(t, filepath.Join("bootstrap-b", "apps.yaml"), application(t, "app-b", "app", ""))
+	script, log := postRenderer(t, `echo start >> "$RENDER_LOG"
+sleep 0.3
+echo end >> "$RENDER_LOG"
+`)
+
+	err := walkRoots(t, 2, script, Root{Input: "bootstrap-a", Output: "output-a"}, Root{Input: "bootstrap-b", Output: "output-b"})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if events := readLines(t, log); !slices.Equal(events, []string{"start", "start", "end", "end"}) {
+		t.Errorf("Expected the apps of both roots to render at the same time, got %q", events)
 	}
 }

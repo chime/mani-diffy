@@ -306,6 +306,31 @@ kind: Application
 		}
 	})
 
+	t.Run("TemplateRendersEachApplicationOfAChartWithItsOwnValues", func(t *testing.T) {
+		apps, err := Read("crdData_optional_sub.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for range 2 {
+			withoutSub, err := template(apps[0], "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			withSub, err := template(apps[1], "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if strings.Contains(string(withoutSub), "name: sub") {
+				t.Errorf("Expected the disabled subchart not to be rendered, got:\n%s", withoutSub)
+			}
+			if !strings.Contains(string(withSub), "name: sub") {
+				t.Errorf("Expected the subchart to be rendered, got:\n%s", withSub)
+			}
+		}
+	})
+
 	t.Run("CLIVersions", func(t *testing.T) {
 		info := &debug.BuildInfo{Deps: []*debug.Module{
 			{Path: "helm.sh/helm/v3", Version: "v3.17.1"},
