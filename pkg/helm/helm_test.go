@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
-	"helm.sh/helm/v3/pkg/chartutil"
 )
 
 func mapKeys(m map[string][32]byte) []string {
@@ -275,7 +274,7 @@ kind: Application
 	})
 
 	t.Run("TemplateMatchesHelmCLI", func(t *testing.T) {
-		// Golden files were rendered by the helm v3.17.1 CLI.
+		// Golden files were rendered by the helm v4.2.1 CLI.
 		scenarios := []struct {
 			application string
 			golden      string
@@ -374,8 +373,8 @@ kind: Application
 
 	t.Run("CLIVersions", func(t *testing.T) {
 		info := &debug.BuildInfo{Deps: []*debug.Module{
-			{Path: "helm.sh/helm/v3", Version: "v3.17.1"},
-			{Path: "k8s.io/client-go", Version: "v0.31.0", Replace: &debug.Module{Path: "k8s.io/client-go", Version: "v0.32.2"}},
+			{Path: "helm.sh/helm/v4", Version: "v4.2.1"},
+			{Path: "k8s.io/client-go", Version: "v0.35.0", Replace: &debug.Module{Path: "k8s.io/client-go", Version: "v0.36.1"}},
 		}}
 
 		helm, kube, err := cliVersions(info)
@@ -383,18 +382,18 @@ kind: Application
 		if err != nil {
 			t.Fatal(err)
 		}
-		if helm != "v3.17.1" {
-			t.Errorf("Expected helm version v3.17.1, got %s", helm)
+		if helm != "v4.2.1" {
+			t.Errorf("Expected helm version v4.2.1, got %s", helm)
 		}
-		if want := (chartutil.KubeVersion{Version: "v1.32.0", Major: "1", Minor: "32"}); kube != want {
-			t.Errorf("Expected kube version %+v, got %+v", want, kube)
+		if kube.String() != "v1.36.0" || kube.Major != "1" || kube.Minor != "36" {
+			t.Errorf("Expected kube version v1.36.0, got %+v", kube)
 		}
 	})
 
 	t.Run("CLIVersionsWithoutHelm", func(t *testing.T) {
-		_, _, err := cliVersions(&debug.BuildInfo{Deps: []*debug.Module{{Path: "k8s.io/client-go", Version: "v0.32.2"}}})
+		_, _, err := cliVersions(&debug.BuildInfo{Deps: []*debug.Module{{Path: "k8s.io/client-go", Version: "v0.36.1"}}})
 
-		if err == nil || !strings.Contains(err.Error(), "helm.sh/helm/v3") {
+		if err == nil || !strings.Contains(err.Error(), "helm.sh/helm/v4") {
 			t.Errorf("Expected an error about the missing helm module, got: %v", err)
 		}
 	})
@@ -506,7 +505,7 @@ kind: Application
 		crd := data[0]
 
 		hash, err := generateHashOnCrd(crd)
-		if err != nil || hash != "1629f322e698200b4265750f8effd83b5d88f531946e403a6e32050eb1917327" {
+		if err != nil || hash != "15875562a99becd18489077b6ac2a11407e3df36fd40f43d1580bf0b9f34610c" {
 			t.Errorf("Failed to generate correctly, got %s", hash)
 		}
 	})
@@ -610,13 +609,13 @@ kind: Application
 				name:            "Generating hash for an Application",
 				file:            "crdData_testfile_3.yaml",
 				ignoreValueFile: "",
-				hash:            "0013d3488f848c50424be9b6926b4c797f41876904b73aedccd410aacded9ed2",
+				hash:            "049f52ddf4e141f2374a8947d8221d4a55452a9c13d07c31d5a6c12fe6209849",
 			},
 			{
 				name:            "Generate hash for an application with ignoreMissingValueFiles and a missing value file",
 				file:            "crdData_testfile_4.yaml",
 				ignoreValueFile: "",
-				hash:            "eecc939adbc25a5f42ae0055d806edbf887c12ee439619e4a25dcea9f531df27",
+				hash:            "654dde61d7c50f71a75d23f20950636750af3c7fac6b8a75de619499acdd3991",
 			},
 		}
 

@@ -4,6 +4,7 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: default
+
 ---
 # Source: cli-parity/templates/configmap.yaml
 apiVersion: v1
@@ -12,15 +13,16 @@ metadata:
   name: release-name-cli-parity
   namespace: default
 data:
-  kubeVersion: v1.32.0
-  kubeMinor: "32"
-  helmVersion: v3.17.1
+  kubeVersion: v1.36.0
+  kubeMinor: "36"
+  helmVersion: v4.2.1
   hasDeployments: "false"
   greeting: hello
   env: prod
   inline: 
   appTag: CONSCIOUSLY_NOT_RENDERED
   replicas: "3"
+
 ---
 # Source: cli-parity/charts/sub/templates/service.yaml
 apiVersion: v1
@@ -45,3 +47,4 @@ spec:
       containers:
         - name: migrate
           image: busybox
+
