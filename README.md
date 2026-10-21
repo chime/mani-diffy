@@ -124,4 +124,4 @@ A: No, ArgoCD renders the charts itself. There is no expected discrepancy betwee
 
 Q: Which version of Helm does mani-diffy use?
 
-A: mani-diffy renders charts with the Helm library it is built with: the `helm.sh/helm/v3` version in [`go.mod`](go.mod), not the `helm` binary on your `PATH`.
+A: mani-diffy renders charts with the Helm library it is built with: the `helm.sh/helm/v4` version in [`go.mod`](go.mod), not the `helm` binary on your `PATH`.

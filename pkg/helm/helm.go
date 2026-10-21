@@ -9,44 +9,47 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"log/slog"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
 	"github.com/chime/mani-diffy/pkg/kustomize"
 	"github.com/chime/mani-diffy/pkg/randomvalues"
-	"helm.sh/helm/v3/pkg/action"
-	"helm.sh/helm/v3/pkg/chart"
-	"helm.sh/helm/v3/pkg/chart/loader"
-	"helm.sh/helm/v3/pkg/chartutil"
-	"helm.sh/helm/v3/pkg/cli"
-	"helm.sh/helm/v3/pkg/cli/values"
-	"helm.sh/helm/v3/pkg/downloader"
-	"helm.sh/helm/v3/pkg/getter"
-	"helm.sh/helm/v3/pkg/registry"
+	"helm.sh/helm/v4/pkg/action"
+	chartinterface "helm.sh/helm/v4/pkg/chart"
+	"helm.sh/helm/v4/pkg/chart/common"
+	"helm.sh/helm/v4/pkg/chart/loader/archive"
+	chart "helm.sh/helm/v4/pkg/chart/v2"
+	"helm.sh/helm/v4/pkg/chart/v2/loader"
+	"helm.sh/helm/v4/pkg/cli"
+	"helm.sh/helm/v4/pkg/cli/values"
+	"helm.sh/helm/v4/pkg/downloader"
+	"helm.sh/helm/v4/pkg/getter"
+	"helm.sh/helm/v4/pkg/registry"
+	releasev1 "helm.sh/helm/v4/pkg/release/v1"
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 )
 
 // cliKubeVersion makes templates see the same capabilities as when rendered by
-// the helm CLI release build of the linked helm.sh/helm/v3, and returns the
+// the helm CLI release build of the linked helm.sh/helm/v4, and returns the
 // Kubernetes version to render with.
-var cliKubeVersion = sync.OnceValues(func() (chartutil.KubeVersion, error) {
+var cliKubeVersion = sync.OnceValues(func() (common.KubeVersion, error) {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
-		return chartutil.KubeVersion{}, errors.New("build info is not available")
+		return common.KubeVersion{}, errors.New("build info is not available")
 	}
 	helmVersion, kubeVersion, err := cliVersions(info)
 	if err != nil {
-		return chartutil.KubeVersion{}, err
+		return common.KubeVersion{}, err
 	}
-	chartutil.DefaultCapabilities.HelmVersion.Version = helmVersion
+	common.DefaultCapabilities.HelmVersion.Version = helmVersion
 	return kubeVersion, nil
 })
 
@@ -54,7 +57,7 @@ var cliKubeVersion = sync.OnceValues(func() (chartutil.KubeVersion, error) {
 // template capabilities: helm's own version, and the Kubernetes version
 // matching its k8s.io/client-go dependency (client-go v0.32.x is Kubernetes
 // 1.32).
-func cliVersions(info *debug.BuildInfo) (string, chartutil.KubeVersion, error) {
+func cliVersions(info *debug.BuildInfo) (string, common.KubeVersion, error) {
 	modules := map[string]string{}
 	for _, dep := range info.Deps {
 		modules[dep.Path] = dep.Version
@@ -63,28 +66,32 @@ func cliVersions(info *debug.BuildInfo) (string, chartutil.KubeVersion, error) {
 		}
 	}
 
-	helmVersion, ok := modules["helm.sh/helm/v3"]
+	helmVersion, ok := modules["helm.sh/helm/v4"]
 	if !ok {
-		return "", chartutil.KubeVersion{}, errors.New("build info does not list helm.sh/helm/v3")
+		return "", common.KubeVersion{}, errors.New("build info does not list helm.sh/helm/v4")
 	}
 	clientGoVersion, ok := modules["k8s.io/client-go"]
 	if !ok {
-		return "", chartutil.KubeVersion{}, errors.New("build info does not list k8s.io/client-go")
+		return "", common.KubeVersion{}, errors.New("build info does not list k8s.io/client-go")
 	}
 
 	var major, minor int
 	if _, err := fmt.Sscanf(clientGoVersion, "v%d.%d.", &major, &minor); err != nil {
-		return "", chartutil.KubeVersion{}, fmt.Errorf("unexpected k8s.io/client-go version %s: %w", clientGoVersion, err)
+		return "", common.KubeVersion{}, fmt.Errorf("unexpected k8s.io/client-go version %s: %w", clientGoVersion, err)
 	}
-	kubeMajor, kubeMinor := strconv.Itoa(major+1), strconv.Itoa(minor)
-	return helmVersion, chartutil.KubeVersion{
-		Version: fmt.Sprintf("v%s.%s.0", kubeMajor, kubeMinor),
-		Major:   kubeMajor,
-		Minor:   kubeMinor,
-	}, nil
+	kubeVersion, err := common.ParseKubeVersion(fmt.Sprintf("v%d.%d.0", major+1, minor))
+	if err != nil {
+		return "", common.KubeVersion{}, err
+	}
+	return helmVersion, *kubeVersion, nil
 }
 
 var settings = cli.New()
+
+// getters are the protocols that value files and chart dependencies are
+// downloaded with. They are found once per run, since finding them loads
+// Helm plugins, which is not safe to do concurrently.
+var getters = sync.OnceValue(func() getter.Providers { return getter.All(settings) })
 
 // notRendered replaces the values that manifests leave out: the value of the
 // skip-render key, and random values.
@@ -203,7 +210,7 @@ func loadChart(chartPath string) (loadedChart, error) {
 
 // chartSource is the files of a chart directory as read from disk.
 type chartSource struct {
-	files []*loader.BufferedFile
+	files []*archive.BufferedFile
 	// callsRandomFunctions is whether any of the files has a template action
 	// that calls a random function.
 	callsRandomFunctions bool
@@ -256,9 +263,9 @@ func readChartSource(chartPath string) (chartSource, error) {
 	if err != nil {
 		return chartSource{}, err
 	}
-	source := chartSource{files: make([]*loader.BufferedFile, len(c.Raw))}
+	source := chartSource{files: make([]*archive.BufferedFile, len(c.Raw))}
 	for i, f := range c.Raw {
-		source.files[i] = &loader.BufferedFile{Name: f.Name, Data: f.Data}
+		source.files[i] = &archive.BufferedFile{Name: f.Name, ModTime: f.ModTime, Data: f.Data}
 		source.callsRandomFunctions = source.callsRandomFunctions || randomFunctionCall.Match(f.Data)
 	}
 	return source, nil
@@ -300,7 +307,14 @@ func checkIfInstallable(c *chart.Chart) error {
 }
 
 func missingDependencies(c *chart.Chart) bool {
-	return c.Metadata.Dependencies != nil && action.CheckDependencies(c, c.Metadata.Dependencies) != nil
+	if c.Metadata.Dependencies == nil {
+		return false
+	}
+	dependencies := make([]chartinterface.Dependency, len(c.Metadata.Dependencies))
+	for i, d := range c.Metadata.Dependencies {
+		dependencies[i] = d
+	}
+	return action.CheckDependencies(c, dependencies) != nil
 }
 
 func installDependencies(chartDirectory string) error {
@@ -317,10 +331,11 @@ func installDependencies(chartDirectory string) error {
 	manager := &downloader.Manager{
 		Out:              io.Discard,
 		ChartPath:        chartDirectory,
-		Getters:          getter.All(settings),
+		Getters:          getters(),
 		RegistryClient:   registryClient,
 		RepositoryConfig: settings.RepositoryConfig,
 		RepositoryCache:  settings.RepositoryCache,
+		ContentCache:     settings.ContentCache,
 	}
 	if err := manager.Update(); err != nil {
 		return fmt.Errorf("error updating dependencies for %s: %w", chartDirectory, err)
@@ -365,7 +380,7 @@ func prepareRelease(helmInfo *v1alpha1.Application, skipRenderKey string, ignore
 		valueOpts.Values = append(valueOpts.Values, fmt.Sprintf("%s=%s", skipRenderKey, notRendered))
 	}
 
-	vals, err := valueOpts.MergeValues(getter.All(settings))
+	vals, err := valueOpts.MergeValues(getters())
 	if err != nil {
 		return nil, fmt.Errorf("error templating manifest: %w", err)
 	}
@@ -391,18 +406,20 @@ func (r *release) render() (manifest []byte, chartCallsRandomFunctions bool, err
 		return nil, false, fmt.Errorf("error templating manifest: %w", err)
 	}
 
-	client := action.NewInstall(&action.Configuration{Log: func(string, ...interface{}) {}})
-	client.DryRun = true
-	client.DryRunOption = "true"
+	client := action.NewInstall(action.NewConfiguration(action.ConfigurationSetLogger(slog.DiscardHandler)))
+	client.DryRunStrategy = action.DryRunClient
 	client.ReleaseName = "release-name"
 	client.Replace = true
-	client.ClientOnly = true
 	client.Namespace = r.namespace
 	client.KubeVersion = &kubeVersion
 
-	rel, err := client.Run(c.Chart, r.vals)
+	released, err := client.Run(c.Chart, r.vals)
 	if err != nil {
 		return nil, false, fmt.Errorf("error templating manifest: %w", err)
+	}
+	rel, ok := released.(*releasev1.Release)
+	if !ok {
+		return nil, false, fmt.Errorf("error templating manifest: unsupported release type %T", released)
 	}
 
 	var manifests bytes.Buffer
