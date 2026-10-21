@@ -1,0 +1,13 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tpl-values
+spec:
+  destination:
+    namespace: default
+  source:
+    path: charts/tpl-values
+    helm:
+      values: |
+        value: "{{ randAlphaNum 5 }}"
+        static: kept

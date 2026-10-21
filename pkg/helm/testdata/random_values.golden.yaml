@@ -1,0 +1,20 @@
+---
+# Source: random-values/templates/certs.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tls
+type: kubernetes.io/tls
+data:
+  ca.crt: CONSCIOUSLY_NOT_RENDERED
+  tls.crt: CONSCIOUSLY_NOT_RENDERED
+  tls.key: CONSCIOUSLY_NOT_RENDERED
+---
+# Source: random-values/templates/certs.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ca
+data:
+  ca.pem: "CONSCIOUSLY_NOT_RENDERED"
+  rollme: "CONSCIOUSLY_NOT_RENDERED"

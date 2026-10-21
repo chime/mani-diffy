@@ -1,0 +1,9 @@
+---
+# Source: tpl-values/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tpl-values
+data:
+  value: "CONSCIOUSLY_NOT_RENDERED"
+  static: "kept"

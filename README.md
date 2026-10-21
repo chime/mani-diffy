@@ -34,7 +34,7 @@ https://github.com/chime/mani-diffy/assets/9005904/6c496996-f7af-4932-bf5d-01a5b
 
 ## Output
 
-By default, `mani-diffy` prints a summary of what it did: how many applications it rendered, and how many were unchanged since the last run. While rendering, it shows the progress of every root on a terminal, updating in place, or prints a line for each root as it finishes otherwise. With `-v`, it prints the progress of every application, and Helm's warnings, instead.
+By default, `mani-diffy` prints a summary of what it did: how many applications it rendered, how many of those it rendered twice to mask random values, and how many were unchanged since the last run. While rendering, it shows the progress of every root on a terminal, updating in place, or prints a line for each root as it finishes otherwise. With `-v`, it prints the progress of every application, and Helm's warnings, instead.
 
 Colors are used on a terminal. Otherwise, they're only used with [`CLICOLOR_FORCE=1`](https://bixense.com/clicolors/), for logs that show colors, like those of GitHub Actions:
 
@@ -53,6 +53,7 @@ hashStore: json
 ignoreSuffix: -console
 skipRenderKey: appTag
 ignoreValueFile: overrides/apptags
+maskRandomValues: true
 roots:
   - name: use1-stable
     root: bootstrap/child-applications/us-east-1/stable
@@ -62,7 +63,7 @@ roots:
     output: zz.auto-generated/root-use1-prod
 ```
 
-Flags override the config file's settings: `-hash-store`, `-ignore-suffix`, `-skip-render-key`, and `-ignore-value-file` replace the setting of the same name, and `-root` or `-output` render only that root instead of the config file's roots.
+Flags override the config file's settings: `-hash-store`, `-ignore-suffix`, `-skip-render-key`, `-ignore-value-file`, and `-mask-random-values` replace the setting of the same name, and `-root` or `-output` render only that root instead of the config file's roots.
 
 To render only some of the roots, name them with `-only`:
 
@@ -81,6 +82,18 @@ mani-diffy -post-renderer="bin/post-render" -output=.zz-auto-generated
 ```
 
 The command will be called with the output directory as the first argument (e.g. `.zz-auto-generated/<application name>`)
+
+## Random values
+
+Charts that generate certificates, passwords, or other random values render a different manifest every time. With `-mask-random-values`, `mani-diffy` renders twice each chart that calls a random function, and replaces the values that differ between the two renders with `CONSCIOUSLY_NOT_RENDERED`, so the rendered manifests only change when the templates do:
+
+```
+mani-diffy -mask-random-values -output=.zz-auto-generated
+```
+
+Values derived from random ones, like checksums of templates that generate certificates, are masked too. The rest of the manifest is left as rendered, and the masked fields of each application are logged.
+
+A chart is rendered twice when a template action in its files, or in its values for charts that render them with `tpl`, calls one of `randAlphaNum`, `randAlpha`, `randAscii`, `randNumeric`, `randBytes`, `randInt`, `shuffle`, `uuidv4`, `now`, `ago`, `genPrivateKey`, `genCA`, `genCAWithKey`, `genSelfSignedCert`, `genSelfSignedCertWithKey`, `genSignedCert`, `genSignedCertWithKey`, `bcrypt`, `htpasswd`, or `encryptAES`. Values that change slower than two renders, like `now | date "2006-01-02"`, are not masked.
 
 ---
 

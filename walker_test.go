@@ -64,11 +64,16 @@ func walk(t *testing.T, root, output string, parallelism int) error {
 
 func walkWithPostRenderer(t *testing.T, root, output string, parallelism int, postRenderer string) error {
 	t.Helper()
-	_, err := walkCounting(t, root, output, parallelism, postRenderer)
+	return walkWith(t, root, output, parallelism, postRenderer, false)
+}
+
+func walkWith(t *testing.T, root, output string, parallelism int, postRenderer string, maskRandomValues bool) error {
+	t.Helper()
+	_, err := walkCounting(t, root, output, parallelism, postRenderer, maskRandomValues)
 	return err
 }
 
-func walkCounting(t *testing.T, root, output string, parallelism int, postRenderer string) (Stats, error) {
+func walkCounting(t *testing.T, root, output string, parallelism int, postRenderer string, maskRandomValues bool) (Stats, error) {
 	t.Helper()
 	if err := os.MkdirAll(output, 0755); err != nil {
 		t.Fatal(err)
@@ -77,7 +82,7 @@ func walkCounting(t *testing.T, root, output string, parallelism int, postRender
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := newWalker("", "", "-ignore", parallelism)
+	w := newWalker("", "", "-ignore", parallelism, maskRandomValues)
 	if postRenderer != "" {
 		w.PostRender = PostRender(postRenderer)
 	}
@@ -287,11 +292,29 @@ touch "$1/post-rendered"
 	}
 }
 
+func TestWalkRendersAgainWhenMaskingRandomValuesIsTurnedOn(t *testing.T) {
+	root, output := newWorkspace(t)
+	writeFile(t, filepath.Join(root, "apps.yaml"), application(t, "app", "app", ""))
+	script, log := postRenderer(t, `basename "$1" >> "$RENDER_LOG"
+`)
+	if err := walkWith(t, root, output, 2, script, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := walkWith(t, root, output, 2, script, true); err != nil {
+		t.Fatal(err)
+	}
+
+	if renders := readLines(t, log); len(renders) != 2 {
+		t.Errorf("Expected app to be rendered again, got renders %q", renders)
+	}
+}
+
 // walkRoots walks several roots, each with its own output and hash store, the
 // way a config file with several roots does.
 func walkRoots(t *testing.T, parallelism int, postRenderer string, roots ...Root) error {
 	t.Helper()
-	_, err := walkRootsReporting(t, parallelism, postRenderer, roots...)
+	_, err := walkRootsReporting(t, parallelism, postRenderer, false, roots...)
 	return err
 }
 
@@ -304,7 +327,7 @@ type progressReport struct {
 
 // walkRootsReporting walks several roots like walkRoots, and returns the
 // reports of their progress, in order.
-func walkRootsReporting(t *testing.T, parallelism int, postRenderer string, roots ...Root) ([]progressReport, error) {
+func walkRootsReporting(t *testing.T, parallelism int, postRenderer string, maskRandomValues bool, roots ...Root) ([]progressReport, error) {
 	t.Helper()
 	for i := range roots {
 		if err := os.MkdirAll(roots[i].Output, 0755); err != nil {
@@ -316,7 +339,7 @@ func walkRootsReporting(t *testing.T, parallelism int, postRenderer string, root
 		}
 		roots[i].Hashes = hashes
 	}
-	w := newWalker("", "", "-ignore", parallelism)
+	w := newWalker("", "", "-ignore", parallelism, maskRandomValues)
 	if postRenderer != "" {
 		w.PostRender = PostRender(postRenderer)
 	}
@@ -375,6 +398,42 @@ echo end >> "$RENDER_LOG"
 	}
 }
 
+func TestWalkMasksRandomValuesAndRendersChildApplications(t *testing.T) {
+	root, output := newWorkspace(t)
+	writeFile(t, filepath.Join(root, "apps.yaml"), application(t, "parent", "random-apps", `
+apps:
+- name: child
+  chart: app
+`))
+	script, log := postRenderer(t, `basename "$1" >> "$RENDER_LOG"
+`)
+
+	if err := walkWith(t, root, output, 2, script, true); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest, err := os.ReadFile(filepath.Join(output, "parent", "manifest.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(manifest), `token: "CONSCIOUSLY_NOT_RENDERED"`) {
+		t.Errorf("Expected the random value to be masked, got:\n%s", manifest)
+	}
+	if !isRendered(output, "child") {
+		t.Error("Expected child to be rendered")
+	}
+
+	if err := walkWith(t, root, output, 2, script, true); err != nil {
+		t.Fatal(err)
+	}
+
+	renders := readLines(t, log)
+	slices.Sort(renders)
+	if want := []string{"child", "parent"}; !slices.Equal(renders, want) {
+		t.Errorf("Expected each application to be rendered once over both walks, got renders %q", renders)
+	}
+}
+
 func TestWalkCountsWhatItDidWithApplications(t *testing.T) {
 	root, output := newWorkspace(t)
 	kustomize := v1alpha1.Application{
@@ -389,18 +448,18 @@ func TestWalkCountsWhatItDidWithApplications(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(root, "apps.yaml"),
-		application(t, "plain", "app", "")+application(t, "other", "app", "name: other")+string(content)+"\n")
+		application(t, "plain", "app", "")+application(t, "random", "random-apps", "")+string(content)+"\n")
 
-	first, err := walkCounting(t, root, output, 2, "")
+	first, err := walkCounting(t, root, output, 2, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := walkCounting(t, root, output, 2, "")
+	second, err := walkCounting(t, root, output, 2, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if want := (Stats{Rendered: 2, Unsupported: 1}); first != want {
+	if want := (Stats{Rendered: 2, RenderedTwice: 1, Unsupported: 1}); first != want {
 		t.Errorf("Expected the first walk to count %+v, got %+v", want, first)
 	}
 	if want := (Stats{Unchanged: 2, Unsupported: 1}); second != want {
@@ -420,7 +479,7 @@ apps:
 		t.Fatal(err)
 	}
 
-	reports, err := walkRootsReporting(t, 2, "",
+	reports, err := walkRootsReporting(t, 2, "", false,
 		Root{Name: "a", Input: "bootstrap-a", Output: "output-a"},
 		Root{Name: "b", Input: "bootstrap-b", Output: "output-b"},
 		Root{Name: "empty", Input: "bootstrap-empty", Output: "output-empty"},
@@ -470,7 +529,7 @@ func TestWalkReportsTheRootThatFailed(t *testing.T) {
 	writeFile(t, filepath.Join("bootstrap-a", "apps.yaml"), application(t, "app", "app", ""))
 	writeFile(t, filepath.Join("bootstrap-b", "apps.yaml"), application(t, "bad", "broken", ""))
 
-	reports, err := walkRootsReporting(t, 2, "", Root{Name: "a", Input: "bootstrap-a", Output: "output-a"}, Root{Name: "b", Input: "bootstrap-b", Output: "output-b"})
+	reports, err := walkRootsReporting(t, 2, "", false, Root{Name: "a", Input: "bootstrap-a", Output: "output-a"}, Root{Name: "b", Input: "bootstrap-b", Output: "output-b"})
 
 	if err == nil {
 		t.Fatal("Expected the walk to fail")

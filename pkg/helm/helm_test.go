@@ -1,6 +1,7 @@
 package helm
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"log"
@@ -178,7 +179,7 @@ metadata:
 			t.Error(err)
 		}
 		crdSpec := data[0]
-		_, err = template(crdSpec, "", "")
+		_, _, err = template(crdSpec, "", "", false)
 		if err != nil {
 			log.Println(err)
 			t.Error("Template failed to render a template")
@@ -198,7 +199,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 `
 
-		manifest, _ := template(crdSpec, "", "")
+		manifest, _, _ := template(crdSpec, "", "", false)
 		if strings.Contains(string(manifest), comparisonString) != true {
 			t.Error("Template failed to render a template with expected content")
 		}
@@ -212,7 +213,7 @@ kind: Application
 		app := data[0]
 
 		// Call template with a key to override
-		manifest, _ := template(app, "appTag", "")
+		manifest, _, _ := template(app, "appTag", "", false)
 
 		// Verify the rendered manifest contains the override
 		if !strings.Contains(string(manifest), "appTag: CONSCIOUSLY_NOT_RENDERED") {
@@ -239,7 +240,7 @@ kind: Application
 	}
 
 	t.Run("TemplateInstallsMissingDependencies", func(t *testing.T) {
-		manifest, err := template(needsDependency(t), "", "")
+		manifest, _, err := template(needsDependency(t), "", "", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -257,7 +258,7 @@ kind: Application
 		errs := make(chan error, renders)
 		for range renders {
 			go func() {
-				manifest, err := template(app, "", "")
+				manifest, _, err := template(app, "", "", false)
 				errs <- err
 				results <- string(manifest)
 			}()
@@ -294,13 +295,53 @@ kind: Application
 					t.Fatal(err)
 				}
 
-				got, err := template(apps[0], "appTag", "")
+				got, _, err := template(apps[0], "appTag", "", false)
 				if err != nil {
 					t.Fatal(err)
 				}
 
 				if string(got) != string(want) {
 					t.Errorf("rendered manifest differs from helm CLI output.\ngot:\n%s\nwant:\n%s", got, want)
+				}
+			})
+		}
+	})
+
+	t.Run("RunMasksRandomValues", func(t *testing.T) {
+		scenarios := []struct {
+			application string
+			golden      string
+		}{
+			{application: "crdData_random_values.yaml", golden: "random_values.golden.yaml"},
+			{application: "crdData_tpl_values.yaml", golden: "tpl_values.golden.yaml"},
+		}
+
+		for _, tt := range scenarios {
+			t.Run(tt.application, func(t *testing.T) {
+				apps, err := Read(tt.application)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want, err := os.ReadFile(tt.golden)
+				if err != nil {
+					t.Fatal(err)
+				}
+				output := t.TempDir()
+
+				rendering, err := Run(apps[0], output, "", "", true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !rendering.Twice {
+					t.Error("Expected the chart to be rendered twice")
+				}
+
+				got, err := os.ReadFile(filepath.Join(output, "manifest.yaml"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(got) != string(want) {
+					t.Errorf("Expected random values to be masked.\ngot:\n%s\nwant:\n%s", got, want)
 				}
 			})
 		}
@@ -313,11 +354,11 @@ kind: Application
 		}
 
 		for range 2 {
-			withoutSub, err := template(apps[0], "", "")
+			withoutSub, _, err := template(apps[0], "", "", false)
 			if err != nil {
 				t.Fatal(err)
 			}
-			withSub, err := template(apps[1], "", "")
+			withSub, _, err := template(apps[1], "", "", false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -373,7 +414,7 @@ kind: Application
 		errs := make(chan error, renders)
 		for range renders {
 			go func() {
-				got, err := template(apps[0], "appTag", "")
+				got, _, err := template(apps[0], "appTag", "", false)
 				errs <- err
 				results <- string(got)
 			}()
@@ -398,9 +439,30 @@ kind: Application
 		app.Spec.Source.Helm.Parameters[0].Name = "replicas"
 		app.Spec.Source.Helm.Parameters[0].Value = "not-a-number"
 
-		_, err = template(app, "", "")
+		_, _, err = template(app, "", "", false)
 		if err == nil || !strings.Contains(err.Error(), "replicas") {
 			t.Errorf("Expected a schema validation error about replicas, got: %v", err)
+		}
+	})
+
+	t.Run("RunLogsTheErrorWhenRenderingFails", func(t *testing.T) {
+		apps, err := Read("crdData_cli_parity.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		app := apps[0]
+		app.Spec.Source.Helm.Parameters[0].Name = "replicas"
+		app.Spec.Source.Helm.Parameters[0].Value = "not-a-number"
+		var logged bytes.Buffer
+		log.SetOutput(&logged)
+		defer log.SetOutput(os.Stderr)
+
+		if _, err := Run(app, t.TempDir(), "", "", false); err == nil {
+			t.Fatal("Expected rendering to fail")
+		}
+
+		if !strings.Contains(logged.String(), "replicas") {
+			t.Errorf("Expected the log to say why rendering failed, got: %q", logged.String())
 		}
 	})
 

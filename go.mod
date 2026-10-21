@@ -9,6 +9,7 @@ require (
 	github.com/argoproj/argo-cd/v3 v3.0.23
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/x/ansi v0.11.9
+	github.com/quietpelican42/yamlsplice v0.0.0-20261007080743-73d6f2efc59f
 	golang.org/x/term v0.38.0
 	gopkg.in/yaml.v3 v3.0.1
 	helm.sh/helm/v3 v3.17.1

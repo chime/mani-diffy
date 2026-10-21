@@ -1,0 +1,20 @@
+{{- $ca := genCA "ca" 365 }}
+{{- $cert := genSignedCert "svc" nil (list "svc.local") 365 $ca }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tls
+type: kubernetes.io/tls
+data:
+  ca.crt: {{ $ca.Cert | b64enc }}
+  tls.crt: {{ $cert.Cert | b64enc }}
+  tls.key: {{ $cert.Key | b64enc }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ca
+data:
+  ca.pem: |
+{{ $ca.Cert | trim | indent 4 }}
+  rollme: {{ randAlphaNum 5 | quote }}
